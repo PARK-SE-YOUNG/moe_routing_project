@@ -745,7 +745,7 @@ The router now returns additional routing statistics:
 
 Forward smoke test returned metrics from encoderblock_5:
 
-```text```
+```text
 auxiliary_loss
 gshard_loss
 importance_loss
@@ -754,6 +754,7 @@ router_confidence
 expert_usage_min
 expert_usage_max
 expert_usage_std
+```
 
 ## Evaluation Latency / Throughput Metrics
 
@@ -767,7 +768,22 @@ Added evaluation system metrics:
 
 ### Metric Formulas
 
-```python```
+```python
 duration_secs = t1 - t0
 images_per_second = num_examples / duration_secs
 latency_per_image = duration_secs / num_examples
+```
+
+## Baseline Eval Command Candidates
+
+### Current Status
+
+Server and dataset path are not finalized yet.
+
+Execution is deferred until GPU/TPU server is available.
+
+### Target Config
+
+```text
+vmoe.configs.vmoe_paper.vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012
+```
