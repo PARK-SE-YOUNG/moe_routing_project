@@ -745,7 +745,7 @@ The router now returns additional routing statistics:
 
 Forward smoke test returned metrics from encoderblock_5:
 
-```text
+```text```
 auxiliary_loss
 gshard_loss
 importance_loss
@@ -754,3 +754,20 @@ router_confidence
 expert_usage_min
 expert_usage_max
 expert_usage_std
+
+## Evaluation Latency / Throughput Metrics
+
+### evaluator.py Update
+
+Added evaluation system metrics:
+
+- duration_secs
+- images_per_second
+- latency_per_image
+
+### Metric Formulas
+
+```python```
+duration_secs = t1 - t0
+images_per_second = num_examples / duration_secs
+latency_per_image = duration_secs / num_examples
