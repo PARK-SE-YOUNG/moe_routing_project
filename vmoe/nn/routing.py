@@ -97,8 +97,11 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
                        f"num_selected_experts = {self.num_selected_experts}.")
     dtype = self.dtype or inputs.dtype
     # Compute the gating logits for each pair of (item, expert).
-    gates_logits = nn.Dense(features=num_experts, use_bias=False,
-                            dtype=dtype, name="dense")(inputs)
+
+    gates_logits_original = nn.Dense(features=num_experts, use_bias=False,
+                                     dtype=dtype, name="dense")(inputs)
+    gates_logits = gates_logits_original
+
     if self.adapter:
       adapter_kwargs = dict(**self.adapter)
       adapter_hidden_dim = adapter_kwargs.pop("hidden_dim", 64)
@@ -109,7 +112,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           name="RouterAdapter",
           **adapter_kwargs,
       )(inputs)
-      gates_logits = gates_logits + delta_logits
+      gates_logits = gates_logits_original + delta_logits
 
     # Compute the auxiliary losses defined in Appendix A.2, from
     # https://arxiv.org/abs/2106.05974. Notice that the "Load Loss" can only be
@@ -117,6 +120,25 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     # Notice that the auxiliary losses are computed on each group independently
     # (i.e. through the vmaps surrounding the calls).
     gates_softmax = jax.nn.softmax(gates_logits)
+
+    gates_softmax_original = jax.nn.softmax(gates_logits_original)
+
+    selected_expert = jnp.argmax(gates_softmax, axis=-1)
+
+    selected_log_prob = jnp.sum(
+        jax.nn.one_hot(selected_expert, num_experts)
+        * jnp.log(gates_softmax + 1e-8),
+        axis=-1,
+    ).mean()
+
+    router_kl_to_original = jnp.sum(
+        gates_softmax
+        * (
+            jnp.log(gates_softmax + 1e-8)
+            - jnp.log(gates_softmax_original + 1e-8)
+        ),
+        axis=-1,
+    ).mean()
     
     router_entropy = -jnp.sum(
       gates_softmax * jnp.log(gates_softmax + 1e-8),
@@ -157,6 +179,8 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "expert_usage_min": expert_usage_min,
           "expert_usage_max": expert_usage_max,
           "expert_usage_std": expert_usage_std,
+          "selected_log_prob": selected_log_prob,
+          "router_kl_to_original": router_kl_to_original,
       }
       return gates_softmax, metrics
     else:
@@ -182,6 +206,8 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "expert_usage_min": expert_usage_min,
           "expert_usage_max": expert_usage_max,
           "expert_usage_std": expert_usage_std,
+          "selected_log_prob": selected_log_prob,
+          "router_kl_to_original": router_kl_to_original,
       }
       return gates_softmax_noisy, metrics
 
