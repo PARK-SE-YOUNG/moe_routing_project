@@ -680,3 +680,51 @@ Possible future metrics:
 - KL divergence
 - selected expert
 - action logprob
+
+## Adapter Smoke Test Results
+
+### Config Load
+
+Passed.
+
+- adapter.hidden_dim = 64
+- optimizer.trainable_pattern = RouterAdapter
+
+### Model Initialization
+
+Passed on CPU with dummy input:
+
+- input shape: (8, 384, 384, 3)
+- logits shape: (8, 1000)
+
+### RouterAdapter Parameters
+
+Detected in:
+
+- Encoder/encoderblock_5/Moe/Router/RouterAdapter
+- Encoder/encoderblock_7/Moe/Router/RouterAdapter
+
+### Zero Initialization
+
+Passed.
+
+RouterAdapter/fc2 parameters are initialized to zero.
+
+### Forward Pass
+
+Passed.
+
+Metrics returned:
+
+- encoderblock_5
+- encoderblock_7
+- auxiliary_loss
+
+### Adapter-only Trainable Check
+
+Passed.
+
+- trainable_count = 8
+- frozen_count = 138
+
+Only RouterAdapter parameters matched trainable_pattern.
