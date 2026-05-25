@@ -51,7 +51,7 @@ class RouterAdapter(nn.Module):
         dtype=dtype,
         name="fc2",
     )(x)
-    
+
     return delta_logits
 
 class NoisyTopExpertsPerItemRouter(nn.Module):
@@ -117,15 +117,46 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     # Notice that the auxiliary losses are computed on each group independently
     # (i.e. through the vmaps surrounding the calls).
     gates_softmax = jax.nn.softmax(gates_logits)
+    
+    router_entropy = -jnp.sum(
+      gates_softmax * jnp.log(gates_softmax + 1e-8),
+      axis=-1,
+      ).mean()
+
+    router_confidence = jnp.max(
+      gates_softmax,
+      axis=-1,
+      ).mean()
+
+    top1_expert = jnp.argmax(gates_softmax, axis=-1)
+
+    expert_usage = jnp.sum(
+      jax.nn.one_hot(top1_expert, num_experts),
+      axis=(0, 1),
+      )
+
+    expert_usage_min = expert_usage.min()
+    expert_usage_max = expert_usage.max()
+    expert_usage_std = expert_usage.std()
+
+
+
     importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
     if self.deterministic or self.noise_std == 0.0:
       gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax)
       metrics = {
           "auxiliary_loss": _weighted_sum(
               (self.gshard_loss_weight, gshard_loss),
-              (self.importance_loss_weight, importance_loss)),
+              (self.importance_loss_weight, importance_loss),
+              (self.load_loss_weight, load_loss)),
           "gshard_loss": gshard_loss,
           "importance_loss": importance_loss,
+          "load_loss": load_loss,
+          "router_entropy": router_entropy,
+          "router_confidence": router_confidence,
+          "expert_usage_min": expert_usage_min,
+          "expert_usage_max": expert_usage_max,
+          "expert_usage_std": expert_usage_std,
       }
       return gates_softmax, metrics
     else:
@@ -140,15 +171,17 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
               num_selected_experts=self.num_selected_experts,
               noise_std=noise_std))(gates_logits, gates_logits_noisy)
       gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax_noisy)
-
       metrics = {
           "auxiliary_loss": _weighted_sum(
               (self.gshard_loss_weight, gshard_loss),
-              (self.importance_loss_weight, importance_loss),
-              (self.load_loss_weight, load_loss)),
+              (self.importance_loss_weight, importance_loss)),
           "gshard_loss": gshard_loss,
           "importance_loss": importance_loss,
-          "load_loss": load_loss,
+          "router_entropy": router_entropy,
+          "router_confidence": router_confidence,
+          "expert_usage_min": expert_usage_min,
+          "expert_usage_max": expert_usage_max,
+          "expert_usage_std": expert_usage_std,
       }
       return gates_softmax_noisy, metrics
 
