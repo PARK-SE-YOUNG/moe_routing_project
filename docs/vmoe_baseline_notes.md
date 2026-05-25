@@ -787,3 +787,24 @@ Execution is deferred until GPU/TPU server is available.
 ```text
 vmoe.configs.vmoe_paper.vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012
 ```
+## Adapter-only Optimizer Update Smoke Test
+
+### Result
+
+Passed.
+
+### Key Output
+
+- changed_count = 4
+- adapter_changed_count = 4
+- non_adapter_changed_count = 0
+
+### Interpretation
+
+Only RouterAdapter parameters were updated by the optimizer.
+
+Backbone, experts, classifier head, and original router parameters remained unchanged.
+
+### Note
+
+The first optimizer step produced no parameter change because the warmup learning-rate schedule starts at zero. Running two update steps confirmed adapter-only updates.
