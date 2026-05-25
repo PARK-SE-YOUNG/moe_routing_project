@@ -207,9 +207,16 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
                                       dataset=ds_iter,
                                       params=params)
         t1 = time.time()
+        
+        duration_secs = t1 - t0
+        num_examples = eval_state.num
+
         metrics[f'{name}/prec@1'] = eval_state.sum_correct / eval_state.num
         metrics[f'{name}/loss'] = eval_state.sum_loss / eval_state.num
-        metrics[f'{name}/duration_secs'] = t1 - t0
+        metrics[f'{name}/duration_secs'] = duration_secs
+        metrics[f'{name}/images_per_second'] = num_examples / duration_secs
+        metrics[f'{name}/latency_per_image'] = duration_secs / num_examples
+
         # Reset iterator for the next evaluation.
         dataset.reset()
 
