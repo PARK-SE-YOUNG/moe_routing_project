@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from absl import logging
-from clu import metric_writers
+from clu import metric_writers, metrics
 from clu import parameter_overview
 from clu import periodic_actions
 import flax
@@ -659,11 +659,24 @@ def train_step(
   def compute_grads_and_metrics(params, images, labels, rngs):
     rngs, next_rngs = utils.tree_rngs_split(rngs)
     logits, metrics = state.apply_fn({'params': params}, images, rngs=rngs)
-    metrics = dict(**metrics)
+    metrics = dict(**metrics)    
     metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
     metrics = jax.tree_util.tree_map(jnp.mean, metrics)
-    total_loss = metrics['main_loss'] + metrics.get('auxiliary_loss', 0.0)
+
+    rl_loss = 0.0
+    rl_loss = rl_loss + metrics.get('router_kl_to_original', 0.0)
+    rl_loss = rl_loss - 0.01 * metrics.get('router_entropy', 0.0)
+
+    metrics['rl_loss'] = rl_loss
+
+    total_loss = (
+        metrics['main_loss']
+        + metrics.get('auxiliary_loss', 0.0)
+        + metrics['rl_loss']
+    )
+
     metrics['total_loss'] = total_loss
+    
     return total_loss, (next_rngs, metrics)
 
   compute_grads_and_metrics = accumulate_gradients_and_metrics(
