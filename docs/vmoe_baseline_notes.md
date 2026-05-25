@@ -728,3 +728,29 @@ Passed.
 - frozen_count = 138
 
 Only RouterAdapter parameters matched trainable_pattern.
+
+## Router Metrics Smoke Test Results
+
+### Added Metrics
+
+The router now returns additional routing statistics:
+
+- router_entropy
+- router_confidence
+- expert_usage_min
+- expert_usage_max
+- expert_usage_std
+
+### Verified Output
+
+Forward smoke test returned metrics from encoderblock_5:
+
+```text
+auxiliary_loss
+gshard_loss
+importance_loss
+router_entropy
+router_confidence
+expert_usage_min
+expert_usage_max
+expert_usage_std
