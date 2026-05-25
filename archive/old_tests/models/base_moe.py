@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from models.router import TopKRouter
+from archive.old_tests.models.router import TopKRouter
 
 class DummyExpert(nn.Module):
     """보고서의 FFNN 1~4 역할을 하는 경량 전문가 네트워크"""

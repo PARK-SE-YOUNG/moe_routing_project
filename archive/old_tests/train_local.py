@@ -6,8 +6,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import time
 import torch
-from models.base_moe import SparseMoELayer
-from datasets.dummy_loader import get_local_dataloader
+from archive.old_tests.models.base_moe import SparseMoELayer
+from archive.old_tests.datasets.dummy_loader import get_local_dataloader
 
 def run_baseline_test():
     print("=== [Baseline] 로컬 파이프라인 테스트 시작 ===")

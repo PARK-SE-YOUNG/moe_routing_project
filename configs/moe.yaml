@@ -1,0 +1,39 @@
+seed: 42
+
+experiment:
+  name: moe_adapter_kl_smoke
+
+data:
+  seq_len: 16
+  vocab_size: 100
+
+model:
+  d_model: 64
+  nhead: 4
+  num_layers: 2
+  num_classes: 2
+
+  num_experts: 4
+  top_k: 2
+  ffn_dim: 128
+
+router:
+  use_adapter: True
+  freeze_adapter_only: True
+  use_kl_loss: True
+  use_rl_loss: True
+  temperature: 0.7
+
+training:
+  batch_size: 8
+  epochs: 5
+  lr: 0.001
+
+  load_balance_alpha: 0.01
+  kl_alpha: 0.01
+  rl_alpha: 0.01
+
+rl:
+  reward_accuracy_weight: 1.0
+  reward_latency_weight: 0.1
+  normalize_reward: true
