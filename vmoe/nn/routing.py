@@ -27,6 +27,32 @@ DType = type(jnp.float32)
 KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
 
+class RouterAdapter(nn.Module):
+  """Small adapter that predicts delta logits for router fine-tuning."""
+  num_experts: int
+  hidden_dim: int = 64
+  dtype: Optional[DType] = None
+
+  @nn.compact
+  def __call__(self, inputs: Array) -> Array:
+    dtype = self.dtype or inputs.dtype
+
+    x = nn.Dense(
+        features=self.hidden_dim,
+        dtype=dtype,
+        name="fc1",
+    )(inputs)
+    x = nn.gelu(x)
+
+    delta_logits = nn.Dense(
+        features=self.num_experts,
+        kernel_init=nn.initializers.zeros,
+        bias_init=nn.initializers.zeros,
+        dtype=dtype,
+        name="fc2",
+    )(x)
+    
+    return delta_logits
 
 class NoisyTopExpertsPerItemRouter(nn.Module):
   """Noisy TopExpertsPerItem router used in https://arxiv.org/abs/2106.05974.
@@ -49,6 +75,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
   importance_loss_weight: float = 1.0
   load_loss_weight: float = 1.0
   dispatcher: Optional[KwArgs] = None
+  adapter: Optional[KwArgs] = None
   deterministic: bool = False
   dtype: Optional[DType] = None
 
@@ -72,6 +99,18 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     # Compute the gating logits for each pair of (item, expert).
     gates_logits = nn.Dense(features=num_experts, use_bias=False,
                             dtype=dtype, name="dense")(inputs)
+    if self.adapter:
+      adapter_kwargs = dict(**self.adapter)
+      adapter_hidden_dim = adapter_kwargs.pop("hidden_dim", 64)
+      delta_logits = RouterAdapter(
+          num_experts=num_experts,
+          hidden_dim=adapter_hidden_dim,
+          dtype=dtype,
+          name="RouterAdapter",
+          **adapter_kwargs,
+      )(inputs)
+      gates_logits = gates_logits + delta_logits
+
     # Compute the auxiliary losses defined in Appendix A.2, from
     # https://arxiv.org/abs/2106.05974. Notice that the "Load Loss" can only be
     # computed if the router is stochastic (i.e. deterministic = False).
