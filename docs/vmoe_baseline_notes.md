@@ -808,3 +808,102 @@ Backbone, experts, classifier head, and original router parameters remained unch
 ### Note
 
 The first optimizer step produced no parameter change because the warmup learning-rate schedule starts at zero. Running two update steps confirmed adapter-only updates.
+
+## Overflow / Dropped Token Metric Status
+
+Current router path:
+
+- NoisyTopExpertsPerItemRouter
+- vmoe.moe.get_top_experts_per_item_dispatcher
+
+Observation:
+
+- The current TopExpertsPerItem dispatcher path returns dispatcher only.
+- It does not directly return overflow or dropped-token metrics.
+- No change was made to vmoe/moe.py to avoid modifying dispatcher/expert execution logic.
+
+Current proxy metrics:
+
+- expert_usage_min
+- expert_usage_max
+- expert_usage_std
+- router_entropy
+- router_confidence
+
+Decision:
+
+Overflow / dropped-token ratio is deferred until server-side baseline evaluation or until dispatcher-level instrumentation is explicitly needed.
+
+## Server-side Execution Plan
+
+### Current Status
+
+Server, GPU count, dataset path, and log path are not finalized yet.
+
+Local ImageNet TFDS check:
+
+```text
+data_dir = C:\Users\janis\tensorflow_datasets\imagenet2012\5.1.0
+splits = {}
+
+Interpretation:
+
+TFDS ImageNet builder exists locally.
+Actual ImageNet train/validation data is not prepared locally.
+Local ImageNet subset evaluation is not available yet.
+Dummy dataset evaluation is intentionally not used.
+Baseline Eval Script
+
+Candidate script:
+
+scripts/slurm/vmoe_baseline_eval.sh
+
+Expected purpose:
+
+Load official V-MoE checkpoint
+Run ImageNet validation evaluation
+Log classification metrics
+Log latency / throughput metrics
+Log routing statistics
+
+Required placeholders to fill later:
+
+VMOE_ROOT
+VIT_JAX_ROOT
+TFDS_DATA_DIR
+TFDS_MANUAL_DIR
+WORKDIR
+GPU count
+Adapter Smoke Script
+
+Candidate script:
+
+scripts/slurm/vmoe_router_adapter_smoke.sh
+
+Expected purpose:
+
+Run trainer-based adapter-only smoke test
+Run checkpoint restore smoke test
+Confirm RouterAdapter params are preserved
+Confirm non-adapter params are frozen
+Baseline Config
+vmoe/configs/vmoe_paper/vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012.py
+
+Purpose:
+
+Official baseline reproduction
+No RouterAdapter
+Adapter Smoke Config
+vmoe/configs/vmoe_paper/vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012_router_adapter_smoke.py
+
+Purpose:
+
+RouterAdapter enabled
+Adapter-only trainable
+Used for local smoke tests and future fine-tuning
+Deferred Until Server / Dataset Ready
+Full ImageNet validation accuracy
+Real latency / throughput measurement
+Single-GPU runtime validation
+Multi-GPU runtime validation
+Slurm execution with real paths
