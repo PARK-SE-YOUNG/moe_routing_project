@@ -111,7 +111,7 @@ def get_config():
       'gradient_clip': {'global_norm': 10.0},
       })
   
-  #config.optimizer.trainable_pattern = 'RouterAdapter'
+  config.optimizer.trainable_pattern = 'RouterAdapter'
   
 
   # These control how the model parameters are partitioned across the device
@@ -155,9 +155,9 @@ def get_vmoe_config(description: str) -> ml_collections.ConfigDict:
   config = common.get_vmoe_config(description, IMAGE_SIZE, NUM_CLASSES)
   config.representation_size = None
   config.encoder.moe.router.dispatcher.capacity_factor = 1.5
-  #config.encoder.moe.router.adapter = ml_collections.ConfigDict({
-  #    'hidden_dim': 64,
-  #})
+  config.encoder.moe.router.adapter = ml_collections.ConfigDict({
+      'hidden_dim': 64,
+  })
   return config
 
 def get_hyper(hyper):
