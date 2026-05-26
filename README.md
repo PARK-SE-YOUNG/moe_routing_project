@@ -1,3 +1,69 @@
+# RL-Router Baseline Scaffold on Official V-MoE
+
+This branch builds an RL-router fine-tuning scaffold on top of the official Google Research V-MoE repository.
+
+## Branch
+
+```text
+rl-router-baseline-scaffold
+
+
+Current Status
+Completed:
+- Official V-MoE codebase preserved
+- RouterAdapter scaffold added
+- logits_new = logits_original + Delta_theta(x)
+- Adapter final layer zero-initialized
+- Adapter-only training verified
+- Routing metrics added
+- RL metric scaffold added
+- RL loss hook added to trainer.py
+- routing_context scaffold added
+- Checkpoint restore compatibility checked
+- Top-5 evaluator metric added
+- Slurm script skeletons added
+
+Not completed yet:
+- Full ImageNet validation accuracy
+- Real latency / throughput benchmark
+- Single-GPU server run
+- Multi-GPU server run
+- PPO / SAC / REINFORCE implementation
+- Hardware-aware routing
+Key Files
+vmoe/nn/routing.py
+vmoe/train/trainer.py
+vmoe/evaluate/evaluator.py
+vmoe/configs/vmoe_paper/*router_adapter_smoke.py
+tiny_adapter_train.py
+tiny_trainer_step_smoke.py
+checkpoint_restore_smoke.py
+scripts/slurm/
+docs/vmoe_baseline_notes.md
+Role of This Branch
+This is not a new MoE implementation.
+This is not a PyTorch prototype.
+This is not a completed RL algorithm.
+
+This branch preserves the official V-MoE baseline and adds the minimum adapter/RL hooks needed for future router fine-tuning experiments.
+Team Usage
+Baseline owner:
+- maintain official V-MoE compatibility
+- run checkpoint/ImageNet baseline when server is ready
+
+RL owner:
+- use routing.py and trainer.py hooks for RL objective integration
+
+Experiment owner:
+- use scripts/slurm and configs for server-side runs
+
+Presentation owner:
+- use docs/vmoe_baseline_notes.md for architecture and milestone summary
+
+The following is the original README from Google Research V-MoE.'''
+
+
+
 # Scaling Vision with Sparse Mixture of Experts
 
 This repository contains the code for training and fine-tuning Sparse MoE models
