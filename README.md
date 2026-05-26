@@ -4,7 +4,6 @@ This branch builds an RL-router fine-tuning scaffold on top of the official Goog
 
 ## Branch
 
-```text
 rl-router-baseline-scaffold
 
 
@@ -60,7 +59,7 @@ Experiment owner:
 Presentation owner:
 - use docs/vmoe_baseline_notes.md for architecture and milestone summary
 
-The following is the original README from Google Research V-MoE.'''
+The following is the original README from Google Research V-MoE.
 
 
 
