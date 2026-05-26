@@ -34,7 +34,12 @@ class RouterAdapter(nn.Module):
   dtype: Optional[DType] = None
 
   @nn.compact
-  def __call__(self, inputs: Array) -> Array:
+  def __call__(
+      self,
+      inputs: Array,
+      routing_context: Optional[Mapping[str, Array]] = None,
+  ) -> Array:
+    del routing_context
     dtype = self.dtype or inputs.dtype
 
     x = nn.Dense(
@@ -80,15 +85,23 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
   dtype: Optional[DType] = None
 
   @nn.compact
-  def __call__(self, inputs: Array) -> Tuple[BaseDispatcher, Metrics]:
+  def __call__(
+      self,
+      inputs: Array,
+      routing_context: Optional[Mapping[str, Array]] = None,
+  ) -> Tuple[BaseDispatcher, Metrics]:
     gates_softmax, metrics = self._compute_gates_softmax_and_metrics(
-        inputs, self.num_experts)
+        inputs, self.num_experts, routing_context)
     dispatcher = self._create_dispatcher(gates_softmax)
     return dispatcher, metrics
 
   @nn.nowrap
   def _compute_gates_softmax_and_metrics(
-      self, inputs: Array, num_experts: int) -> Tuple[Array, Metrics]:
+      self,
+      inputs: Array,
+      num_experts: int,
+      routing_context: Optional[Mapping[str, Array]] = None,
+  ) -> Tuple[Array, Metrics]:
     if inputs.ndim != 3:
       raise ValueError(f"inputs.ndim must be 3, but it is {inputs.ndim}")
     if not num_experts >= self.num_selected_experts >= 1:
@@ -111,7 +124,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           dtype=dtype,
           name="RouterAdapter",
           **adapter_kwargs,
-      )(inputs)
+      )(inputs, routing_context=routing_context)
       gates_logits = gates_logits_original + delta_logits
 
     # Compute the auxiliary losses defined in Appendix A.2, from

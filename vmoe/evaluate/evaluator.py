@@ -42,20 +42,25 @@ VALID_KEY = input_pipeline.VALID_KEY
 
 tree_map = jax.tree_util.tree_map
 
-
 class EvalState(flax.struct.PyTreeNode):
   """Evaluation state."""
   num: int
   sum_correct: int
+  sum_correct_top5: int
   sum_loss: float
   rngs: Dict[str, PRNGKey]
 
-  def update(self, num, correct, loss, rngs):
+  def update(self, num, correct, correct_top5, loss, rngs):
     num = self.num + num
     sum_correct = self.sum_correct + jnp.sum(correct)
+    sum_correct_top5 = self.sum_correct_top5 + jnp.sum(correct_top5)
     sum_loss = self.sum_loss + jnp.sum(loss)
     return self.replace(
-        num=num, sum_correct=sum_correct, sum_loss=sum_loss, rngs=rngs)
+        num=num,
+        sum_correct=sum_correct,
+        sum_correct_top5=sum_correct_top5,
+        sum_loss=sum_loss,
+        rngs=rngs)
 
 
 class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
@@ -141,6 +146,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     eval_state_dtype_struct = EvalState(  # pytype: disable=wrong-arg-types  # dataclass_transform
         num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
+        sum_correct_top5=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         rngs=jax.eval_shape(lambda: utils.make_rngs(rng_keys, 0)))
     mesh = pxla.thread_resources.env.physical_mesh
@@ -163,6 +169,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
       return EvalState(  # pytype: disable=wrong-arg-types  # jnp-type
           num=jnp.zeros((), dtype=jnp.float32),
           sum_correct=jnp.zeros((), dtype=jnp.float32),
+          sum_correct_top5=jnp.zeros((), dtype=jnp.float32),
           sum_loss=jnp.zeros((), dtype=jnp.float32),
           rngs=rngs)
 
@@ -212,6 +219,8 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         num_examples = eval_state.num
 
         metrics[f'{name}/prec@1'] = eval_state.sum_correct / eval_state.num
+        metrics[f'{name}/prec@5'] = (
+          eval_state.sum_correct_top5 / eval_state.num)
         metrics[f'{name}/loss'] = eval_state.sum_loss / eval_state.num
         metrics[f'{name}/duration_secs'] = duration_secs
         metrics[f'{name}/images_per_second'] = num_examples / duration_secs
@@ -261,8 +270,28 @@ def evaluate_step(
   loss = valid * jnp.sum(loss, axis=tuple(range(1, loss.ndim)))
   correct = (valid[:, None] * labels *
              jax.nn.one_hot(label_pred_fn(logits), labels.shape[1]))
+  top5_pred = jax.lax.top_k(logits, k=5)[1]
+
+  top5_one_hot = jnp.sum(
+      jax.nn.one_hot(
+          top5_pred,
+          labels.shape[1]),
+      axis=1,
+  )
+
+  correct_top5 = (
+      valid[:, None]
+      * labels
+      * top5_one_hot
+  )
   num_valid = jnp.sum(valid, dtype=jnp.float32)
-  return state.update(num_valid, correct, loss, next_rngs)
+
+  return state.update(
+      num_valid,
+      correct,
+      correct_top5,
+      loss,
+      next_rngs)
 
 
 def get_dataset_iterator(dataset: DatasetIterator, mesh: jax.sharding.Mesh):
