@@ -8,5 +8,8 @@ ml-collections==0.1.0
 numpy>=1.19.5
 optax>=0.1.0
 scipy>=1.4.0
-tensorflow-cpu>=2.4.0  # Using tensorflow-cpu to have all GPU memory for JAX.
-tfds-nightly
+tensorflow-cpu>=2.4.0
+tensorflow-datasets
+tensorboard
+pandas
+tqdm

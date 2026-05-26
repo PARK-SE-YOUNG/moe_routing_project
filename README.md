@@ -61,7 +61,42 @@ Presentation owner:
 
 The following is the original README from Google Research V-MoE.
 
+## Environment Setup
 
+### Clone official repositories
+
+```bash
+git clone https://github.com/google-research/vmoe.git
+git clone https://github.com/google-research/vision_transformer.git
+```
+
+### Python environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### PYTHONPATH setup
+
+V-MoE depends on the official `vision_transformer` repository.
+
+Windows PowerShell:
+
+```powershell
+$env:PYTHONPATH="C:\vision_transformer;$env:PYTHONPATH"
+```
+
+Linux / bash:
+
+```bash
+export PYTHONPATH=/path/to/vision_transformer:$PYTHONPATH
+```
+
+```text
+vit_jax is imported from the official Google Research vision_transformer repository.
+```
 
 # Scaling Vision with Sparse Mixture of Experts
 
