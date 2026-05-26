@@ -845,65 +845,190 @@ Local ImageNet TFDS check:
 ```text
 data_dir = C:\Users\janis\tensorflow_datasets\imagenet2012\5.1.0
 splits = {}
+```
 
-Interpretation:
+### Interpretation
 
+```text
 TFDS ImageNet builder exists locally.
 Actual ImageNet train/validation data is not prepared locally.
 Local ImageNet subset evaluation is not available yet.
 Dummy dataset evaluation is intentionally not used.
-Baseline Eval Script
+```
 
-Candidate script:
+### Baseline Eval Script
 
+```text
 scripts/slurm/vmoe_baseline_eval.sh
+```
 
 Expected purpose:
 
-Load official V-MoE checkpoint
-Run ImageNet validation evaluation
-Log classification metrics
-Log latency / throughput metrics
-Log routing statistics
+```text
+Load official V-MoE checkpoint.
+Run ImageNet validation evaluation.
+Log top-1 / top-5 accuracy and validation loss.
+Log latency / throughput metrics.
+Log routing statistics.
+```
 
 Required placeholders to fill later:
 
+```text
 VMOE_ROOT
 VIT_JAX_ROOT
 TFDS_DATA_DIR
 TFDS_MANUAL_DIR
 WORKDIR
 GPU count
-Adapter Smoke Script
+branch / commit hash
+```
 
-Candidate script:
+### Adapter Smoke Script
 
+```text
 scripts/slurm/vmoe_router_adapter_smoke.sh
+```
 
 Expected purpose:
 
-Run trainer-based adapter-only smoke test
-Run checkpoint restore smoke test
-Confirm RouterAdapter params are preserved
-Confirm non-adapter params are frozen
-Baseline Config
+```text
+Run trainer-based adapter-only smoke test.
+Run checkpoint restore smoke test.
+Confirm RouterAdapter params are preserved after checkpoint restore.
+Confirm non-adapter params remain frozen.
+```
+
+## Config Split Status
+
+### Baseline Config
+
+```text
 vmoe/configs/vmoe_paper/vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012.py
+```
 
 Purpose:
 
-Official baseline reproduction
-No RouterAdapter
-Adapter Smoke Config
+```text
+Official baseline reproduction.
+No RouterAdapter.
+```
+
+### Adapter Smoke Config
+
+```text
 vmoe/configs/vmoe_paper/vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012_router_adapter_smoke.py
+```
 
 Purpose:
 
-RouterAdapter enabled
-Adapter-only trainable
-Used for local smoke tests and future fine-tuning
-Deferred Until Server / Dataset Ready
-Full ImageNet validation accuracy
-Real latency / throughput measurement
-Single-GPU runtime validation
-Multi-GPU runtime validation
-Slurm execution with real paths
+```text
+RouterAdapter enabled.
+Adapter-only trainable.
+Used for local smoke tests and future fine-tuning.
+```
+
+## Trainer-based Adapter Step Smoke Test
+
+### Result
+
+Passed.
+
+### Key Output
+
+```text
+adapter_changed_count = 4
+non_adapter_changed_count = 0
+```
+
+### Interpretation
+
+```text
+trainer.train_step() successfully runs with the RouterAdapter config.
+The RL loss hook is included in total_loss.
+Config-based optimizer freeze is applied.
+Only RouterAdapter parameters are updated.
+Backbone, experts, classifier head, and original router remain frozen.
+```
+
+## Checkpoint Restore Smoke Test
+
+### Result
+
+Passed.
+
+### Key Output
+
+```text
+restore complete
+num_restored_params = 146
+num_restored_adapter_params = 8
+Checkpoint restore smoke test passed.
+```
+
+### Interpretation
+
+```text
+Official V-MoE checkpoint parameters can be restored into the adapter-enabled parameter tree.
+RouterAdapter parameters are not found in the checkpoint and are preserved from initialization.
+This is expected and desired for adapter fine-tuning.
+```
+
+## routing_context Scaffold Status
+
+### Result
+
+Passed.
+
+### Current Structure
+
+```text
+router(inputs, routing_context=None)
+RouterAdapter(inputs, routing_context=None)
+```
+
+### Interpretation
+
+```text
+Current smoke test still uses Delta_theta(x).
+The call path is now backward-compatible and can later be extended to Delta_theta(x, h, l).
+hardware_state h and expert_load l are not implemented yet.
+```
+
+## Top-5 Accuracy Metric Status
+
+### Result
+
+Implemented.
+
+### Added Metric
+
+```text
+prec@5
+```
+
+### evaluator.py Update
+
+```text
+EvalState now tracks sum_correct_top5.
+evaluate_step computes top-5 predictions using jax.lax.top_k.
+callback_fn writes {dataset}/prec@5.
+```
+
+### Note
+
+```text
+Only syntax and static wiring were verified locally.
+Full validation requires ImageNet data and server/GPU environment.
+```
+
+## Deferred Until Server / Dataset Ready
+
+```text
+Full ImageNet validation accuracy.
+Actual top-1 / top-5 baseline numbers.
+Real latency / throughput measurement.
+Single-GPU runtime validation.
+Multi-GPU runtime validation.
+Slurm execution with real paths.
+```
