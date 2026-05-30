@@ -4,8 +4,10 @@ import optax
 from flax.traverse_util import flatten_dict
 
 from vmoe.configs.vmoe_paper import (
-    vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012 as cfg
-)
+    vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012_router_adapter_smoke
+    as cfg
+    )
+
 from vmoe.nn.vit_moe import VisionTransformerMoe
 from vmoe.train import optimizer
 

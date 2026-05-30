@@ -16,3 +16,4 @@ export PYTHONPATH="${VIT_JAX_ROOT}:${PYTHONPATH:-}"
 
 python tiny_trainer_step_smoke.py
 python checkpoint_restore_smoke.py
+

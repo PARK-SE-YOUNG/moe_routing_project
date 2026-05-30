@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from absl import logging
-from clu import metric_writers, metrics
+from clu import metric_writers
 from clu import parameter_overview
 from clu import periodic_actions
 import flax
@@ -53,7 +53,6 @@ from vmoe.train import optimizer
 from vmoe.train import periodic_actions as train_periodic_actions
 from vmoe.train import train_state as train_state_module
 from vmoe.train import tree_summarizer
-
 
 Array = jax.numpy.ndarray
 ArraySpecDict = input_pipeline.ArraySpecDict
