@@ -1,4 +1,4 @@
-# Context-aware RouterAdapter E=16 1000-step matched run.
+# Context-aware RouterAdapter + head E=16 1000-step matched run.
 # Accuracy baseline config generated from E=16 smoke config.
 # Copyright 2025 Google LLC.
 #
@@ -110,7 +110,7 @@ def get_config():
       'gradient_clip': {'global_norm': 10.0},
       })
   
-  config.optimizer.trainable_pattern = 'RouterAdapter'
+  config.optimizer.trainable_pattern = 'RouterAdapter|head'
   
 
   # These control how the model parameters are partitioned across the device

@@ -1460,3 +1460,108 @@ Interpretation:
 - The current context-aware RouterAdapter destabilizes expert load balance.
 - The context adapter increases overflow/drop ratio and worsens test loss in this rerun.
 - router_kl_to_original is logged as 0 even in the context-adapter run, so KL/debug metrics should be verified next.
+
+## E16 real RouterAdapter debugmetrics run
+
+- Run name: e16-context-adapter-debugmetrics-real-smoke
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/5d5yue3l
+
+Classification:
+- test/prec@1: 0.0009999999310821295
+- test/prec@5: 0.004999999888241291
+- test/loss: 6.907724380493164
+- test/images_per_second: 4591.130859375
+- test/latency_per_image: 0.0002178112481487915
+- steps_per_sec: 1.998442465539559
+
+Encoder block 5:
+- adapter_enabled: 1
+- delta_logits_abs_mean: 0.13374827802181244
+- delta_logits_abs_max: 1.2923740148544312
+- delta_logits_l2_mean: 0.8041110634803772
+- router_prob_l1_to_original: 0.13366256654262543
+- router_top1_change_ratio: 0.09773706644773483
+- router_kl_to_original_debug: 0.01977257803082466
+- overflow/drop ratio: 0.07295256853103638
+- expert_token_count_std: 329.0123291015625
+
+Encoder block 7:
+- adapter_enabled: 1
+- delta_logits_abs_mean: 0.14176207780838013
+- delta_logits_abs_max: 0.878890872001648
+- delta_logits_l2_mean: 0.7376733422279358
+- router_prob_l1_to_original: 0.15530547499656677
+- router_top1_change_ratio: 0.13394396007061005
+- router_kl_to_original_debug: 0.019291820004582405
+- overflow/drop ratio: 0.10705816745758057
+- expert_token_count_std: 388.9153137207031
+
+Interpretation:
+- RouterAdapter is now truly enabled.
+- Delta logits and router changes are measurable.
+- However, classification performance is near random.
+- Next priority is to verify checkpoint/head restore and trainable/frozen parameter policy.
+
+## E16 RouterAdapter + head 1000-step debugmetrics run
+
+- Run name: e16-context-adapter-head-1000steps-debugmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/1wg0flm6
+- Purpose:
+  - Enable both RouterAdapter and classification head as trainable parameters.
+  - Fix the random frozen head issue observed in RouterAdapter-only real run.
+  - Compare adapter+head against official-router baseline under full routing/debug metrics.
+- System summary:
+  - images/s: 4606.55371
+  - test/duration_secs: 10.8541
+  - steps/s: 2.00531
+  - GPU memory used ratio mean: 0.76877
+  - GPU utilization mean: 100
+- Notes:
+  - System overhead remains negligible compared with official-router baseline.
+  - Accuracy/loss and routing/debug metrics need to be inspected from W&B history.
+
+## E16 RouterAdapter + head scale=0.1 1000-step debugmetrics result
+
+- Run name: e16-context-adapter-head-scale01-1000steps-debugmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/ih11ulj1
+
+Classification:
+- test/prec@1: 0.1887199878692627
+- test/prec@5: 0.3902999758720398
+- test/loss: 6.775588035583496
+- test/images_per_second: 4585.56103515625
+- test/latency_per_image: 0.00021807581651955843
+- steps_per_sec: 1.9999784382708354
+
+Training loss:
+- train/main_loss: 6.770804405212402
+- train/auxiliary_loss: 0.010374508798122406
+- train/total_loss: 6.781178951263428
+
+Encoder block 5:
+- adapter_enabled: 1
+- delta_logits_abs_mean: 0.014171836897730827
+- delta_logits_abs_max: 0.11332299560308456
+- delta_logits_l2_mean: 0.09335412830114365
+- router_prob_l1_to_original: 0.017305893823504448
+- router_top1_change_ratio: 0.012500000186264515
+- router_kl_to_original_debug: 0.0003402199363335967
+- overflow/drop ratio: 0.10980606079101562
+- expert_token_count_std: 416.34210205078125
+
+Encoder block 7:
+- adapter_enabled: 1
+- delta_logits_abs_mean: 0.010929225943982601
+- delta_logits_abs_max: 0.06276483833789825
+- delta_logits_l2_mean: 0.062338728457689285
+- router_prob_l1_to_original: 0.013621456921100616
+- router_top1_change_ratio: 0.01034482754766941
+- router_kl_to_original_debug: 0.00015314067422877997
+- overflow/drop ratio: 0.143696129322052
+- expert_token_count_std: 446.31756591796875
+
+Interpretation:
+- scale=0.1 reduces delta-logits magnitude and router top-1 changes as intended.
+- Classification improves over scale=1.0 but remains below official-router baseline.
+- Overflow/drop ratio and expert usage imbalance worsen, so scale alone is insufficient.
+- Next stabilization should add an explicit load/drop penalty or stronger auxiliary routing balance control.

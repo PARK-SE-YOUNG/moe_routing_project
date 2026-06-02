@@ -221,6 +221,8 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     gates_logits_original = nn.Dense(features=num_experts, use_bias=False,
                                      dtype=dtype, name="dense")(inputs)
     gates_logits = gates_logits_original
+    delta_logits = jnp.zeros_like(gates_logits_original)
+    adapter_enabled = jnp.asarray(False, dtype=jnp.bool_)
 
     # Optional RouterAdapter: logits_new = logits_original + Delta_theta(x, h, l).
     if self.adapter:
@@ -228,6 +230,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
       adapter_hidden_dim = adapter_kwargs.pop("hidden_dim", 64)
       adapter_use_context_features = adapter_kwargs.pop(
           "use_context_features", False)
+      adapter_scale = adapter_kwargs.pop("scale", 1.0)
       delta_logits = RouterAdapter(
           num_experts=num_experts,
           hidden_dim=adapter_hidden_dim,
@@ -236,7 +239,9 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           name="RouterAdapter",
           **adapter_kwargs,
       )(inputs, routing_context=routing_context)
+      delta_logits = adapter_scale * delta_logits
       gates_logits = gates_logits_original + delta_logits
+      adapter_enabled = jnp.asarray(True, dtype=jnp.bool_)
 
     # Router probabilities before optional noisy dispatch.
     gates_softmax = jax.nn.softmax(gates_logits)
@@ -256,6 +261,21 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
         ),
         axis=-1,
     ).mean()
+
+    router_kl_to_original_debug = jnp.mean(
+        jnp.sum(
+            gates_softmax * (
+                jnp.log(gates_softmax + 1e-8)
+                - jnp.log(gates_softmax_original + 1e-8)
+            ),
+            axis=-1,
+        )
+    )
+    router_prob_l1_to_original = jnp.mean(
+        jnp.sum(jnp.abs(gates_softmax - gates_softmax_original), axis=-1))
+    router_top1_change_ratio = jnp.mean(
+        (jnp.argmax(gates_softmax, axis=-1)
+         != jnp.argmax(gates_softmax_original, axis=-1)).astype(jnp.float32))
 
     router_entropy = -jnp.sum(
         gates_softmax * jnp.log(gates_softmax + 1e-8),
@@ -296,6 +316,23 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
         "router_context/router_confidence": router_confidence,
         "router_context/selected_log_prob": selected_log_prob,
         "router_context/router_kl_to_original": router_kl_to_original,
+    }
+
+    router_debug_metrics = {
+        "routing/adapter_enabled": adapter_enabled.astype(jnp.float32),
+        "routing/delta_logits_mean": jnp.mean(delta_logits),
+        "routing/delta_logits_abs_mean": jnp.mean(jnp.abs(delta_logits)),
+        "routing/delta_logits_abs_max": jnp.max(jnp.abs(delta_logits)),
+        "routing/delta_logits_l2_mean": jnp.mean(
+            jnp.linalg.norm(delta_logits, axis=-1)),
+        "routing/original_logits_abs_mean": jnp.mean(
+            jnp.abs(gates_logits_original)),
+        "routing/new_logits_abs_mean": jnp.mean(jnp.abs(gates_logits)),
+        "routing/logits_delta_to_original_l2": jnp.mean(
+            jnp.linalg.norm(gates_logits - gates_logits_original, axis=-1)),
+        "routing/router_prob_l1_to_original": router_prob_l1_to_original,
+        "routing/router_top1_change_ratio": router_top1_change_ratio,
+        "routing/router_kl_to_original_debug": router_kl_to_original_debug,
     }
 
     # routing/* namespace for WandB dashboards and future finite-horizon RL
@@ -345,6 +382,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "routing/load_loss": load_loss,
           **token_metrics,
           **router_context_metrics,
+          **router_debug_metrics,
           **routing_metrics,
       }
       return gates_softmax, metrics
@@ -384,6 +422,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
         "routing/load_loss": load_loss,
         **token_metrics,
         **router_context_metrics,
+        **router_debug_metrics,
         **routing_metrics,
     }
     return gates_softmax_noisy, metrics
