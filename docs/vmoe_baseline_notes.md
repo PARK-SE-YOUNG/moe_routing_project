@@ -1285,3 +1285,49 @@ Accuracy metrics:
 Conclusion:
 - E=16 official-router baseline accuracy run completed successfully.
 - TFDS path issue was fixed by explicitly setting data_dir and manual_dir to /workspace/imagenet/tfds and /workspace/imagenet/raw.
+
+## E=16 Context-aware RouterAdapter 1000-step Matched Run Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-context-adapter-1000steps
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/7ihgttm4
+
+Setting:
+- E=16
+- 4 GPUs
+- 4 experts per GPU
+- Adapter ON
+- use_context_features=True
+- train_steps = 1000
+- batch_size = 64
+- train split: train
+- validation split: validation
+
+Final metrics:
+- test/prec@1 = 0.21977999806404114
+- test/prec@5 = 0.44579997658729553
+- test/loss = 6.739166736602783
+- test/images_per_second = 4639.58544921875
+- test/latency_per_image = 0.00021553647820837796
+- steps_per_sec = 2.011138111197917
+- gpu/memory_used_ratio_mean = 0.7686658952272937
+- gpu/utilization_mean = 100
+
+Comparison against E=16 official-router baseline:
+- Baseline Top-1 = 0.20763999223709104
+- Context-adapter Top-1 = 0.21977999806404114
+- Top-1 delta = +0.01214000582695010
+
+- Baseline Top-5 = 0.4370200037956238
+- Context-adapter Top-5 = 0.44579997658729553
+- Top-5 delta = +0.00877997279167173
+
+- Baseline latency/image = 0.00021661202481482175
+- Context-adapter latency/image = 0.00021553647820837796
+
+Conclusion:
+- Context-aware RouterAdapter achieved a small accuracy improvement over the E=16 official-router baseline in the matched 1000-step run.
+- Latency and throughput were effectively unchanged.
+- GPU memory usage was higher and requires repeated controlled runs before attributing the increase solely to the adapter.
