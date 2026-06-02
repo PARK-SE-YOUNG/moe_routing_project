@@ -797,6 +797,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   # Run checkpoint hook just before starting the loop. This will save the train
   # state at initialization.
   def _save_checkpoint(step, ts, it, force=False):
+    if config.get('disable_checkpoint_save', False):
+      logging.info(
+          'Skipping checkpoint save because disable_checkpoint_save=True.')
+      return
     last_seen_index = step * train_batch_size
     with progress_hook.timed('ckpt', wait_jax_async_dispatch=False):
       ckpt_manager.save(

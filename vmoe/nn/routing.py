@@ -28,10 +28,53 @@ KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
 
 class RouterAdapter(nn.Module):
-  """Small adapter that predicts delta logits for router fine-tuning."""
+  """Small adapter that predicts delta logits for router fine-tuning.
+
+  If use_context_features=True, lightweight summary features derived from the
+  current router input are broadcast and concatenated to each token before the
+  adapter MLP. This is a scaffold for context-aware routing while keeping the
+  original router logits unchanged.
+  """
   num_experts: int
   hidden_dim: int = 64
+  use_context_features: bool = False
   dtype: Optional[DType] = None
+
+  def _make_context_features(
+      self,
+      inputs: Array,
+      routing_context: Optional[Mapping[str, Array]] = None,
+  ) -> Array:
+    """Creates broadcast context features for each token.
+
+    The first scaffold only uses input-derived statistics because they are JAX
+    arrays available inside the router. Host-side GPU stats remain logging-only.
+    """
+    del routing_context
+
+    token_l2 = jnp.linalg.norm(inputs, axis=-1, keepdims=True)
+    token_abs_mean = jnp.mean(jnp.abs(inputs), axis=-1, keepdims=True)
+    token_abs_max = jnp.max(jnp.abs(inputs), axis=-1, keepdims=True)
+
+    group_l2_mean = jnp.mean(token_l2, axis=1, keepdims=True)
+    group_abs_mean = jnp.mean(token_abs_mean, axis=1, keepdims=True)
+    group_abs_max = jnp.max(token_abs_max, axis=1, keepdims=True)
+
+    group_l2_mean = jnp.broadcast_to(group_l2_mean, token_l2.shape)
+    group_abs_mean = jnp.broadcast_to(group_abs_mean, token_abs_mean.shape)
+    group_abs_max = jnp.broadcast_to(group_abs_max, token_abs_max.shape)
+
+    return jnp.concatenate(
+        [
+            token_l2,
+            token_abs_mean,
+            token_abs_max,
+            group_l2_mean,
+            group_abs_mean,
+            group_abs_max,
+        ],
+        axis=-1,
+    )
 
   @nn.compact
   def __call__(
@@ -39,14 +82,20 @@ class RouterAdapter(nn.Module):
       inputs: Array,
       routing_context: Optional[Mapping[str, Array]] = None,
   ) -> Array:
-    del routing_context
     dtype = self.dtype or inputs.dtype
+    adapter_inputs = inputs
+
+    if self.use_context_features:
+      context_features = self._make_context_features(
+          inputs, routing_context=routing_context)
+      context_features = context_features.astype(dtype)
+      adapter_inputs = jnp.concatenate([inputs, context_features], axis=-1)
 
     x = nn.Dense(
         features=self.hidden_dim,
         dtype=dtype,
         name="fc1",
-    )(inputs)
+    )(adapter_inputs)
     x = nn.gelu(x)
 
     delta_logits = nn.Dense(
@@ -118,9 +167,12 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     if self.adapter:
       adapter_kwargs = dict(**self.adapter)
       adapter_hidden_dim = adapter_kwargs.pop("hidden_dim", 64)
+      adapter_use_context_features = adapter_kwargs.pop(
+          "use_context_features", False)
       delta_logits = RouterAdapter(
           num_experts=num_experts,
           hidden_dim=adapter_hidden_dim,
+          use_context_features=adapter_use_context_features,
           dtype=dtype,
           name="RouterAdapter",
           **adapter_kwargs,
@@ -174,9 +226,29 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     expert_usage_max = expert_usage.max()
     expert_usage_std = expert_usage.std()
 
+    token_l2 = jnp.linalg.norm(inputs, axis=-1)
+    token_metrics = {
+        "router_input/token_l2_mean": jnp.mean(token_l2),
+        "router_input/token_l2_std": jnp.std(token_l2),
+        "router_input/token_abs_mean": jnp.mean(jnp.abs(inputs)),
+        "router_input/token_abs_max": jnp.max(jnp.abs(inputs)),
+        "router_input/token_num_groups": jnp.asarray(inputs.shape[0], dtype=jnp.float32),
+        "router_input/token_num_tokens": jnp.asarray(inputs.shape[1], dtype=jnp.float32),
+        "router_input/token_hidden_dim": jnp.asarray(inputs.shape[2], dtype=jnp.float32),
+    }
 
+    router_context_metrics = {
+        "router_context/expert_usage_min": expert_usage_min,
+        "router_context/expert_usage_max": expert_usage_max,
+        "router_context/expert_usage_std": expert_usage_std,
+        "router_context/router_entropy": router_entropy,
+        "router_context/router_confidence": router_confidence,
+        "router_context/selected_log_prob": selected_log_prob,
+        "router_context/router_kl_to_original": router_kl_to_original,
+    }
 
     importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
+    load_loss = jnp.zeros_like(importance_loss)
     if self.deterministic or self.noise_std == 0.0:
       gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax)
       metrics = {
@@ -194,6 +266,8 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "expert_usage_std": expert_usage_std,
           "selected_log_prob": selected_log_prob,
           "router_kl_to_original": router_kl_to_original,
+          **token_metrics,
+          **router_context_metrics,
       }
       return gates_softmax, metrics
     else:
@@ -221,6 +295,8 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "expert_usage_std": expert_usage_std,
           "selected_log_prob": selected_log_prob,
           "router_kl_to_original": router_kl_to_original,
+          **token_metrics,
+          **router_context_metrics,
       }
       return gates_softmax_noisy, metrics
 

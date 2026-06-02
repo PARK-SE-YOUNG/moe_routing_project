@@ -31,6 +31,7 @@ Usage in your main.py:
     app.run(main)
 """
 import functools
+import os
 
 from absl import app
 from absl import flags
@@ -41,6 +42,7 @@ import jax
 from ml_collections import config_flags
 import tensorflow as tf
 from vmoe import partitioning
+from vmoe.train import wandb_writer
 
 flags.DEFINE_string('workdir', None, 'Directory to store logs and model data.')
 config_flags.DEFINE_config_file(
@@ -81,9 +83,27 @@ def _main(argv, *, main) -> None:
   platform.work_unit().create_artifact(platform.ArtifactType.DIRECTORY,
                                        FLAGS.workdir, 'workdir')
   # CLU metric writer.
+  # Use logging-only writer in RunPod smoke experiments to avoid
+  # TensorBoard/TF summary async writer flush errors.
   logdir = FLAGS.workdir
   writer = metric_writers.create_default_writer(
-      logdir=logdir, just_logging=jax.process_index() > 0)
+      logdir=logdir, just_logging=True)
+
+  if os.environ.get('VMOE_USE_WANDB', '0') == '1':
+    writer = wandb_writer.WandBMetricWriter(
+        writer,
+        project=os.environ.get('WANDB_PROJECT', 'vmoe-router-adapter'),
+        entity=os.environ.get('WANDB_ENTITY') or None,
+        name=os.environ.get('WANDB_RUN_NAME', None),
+        config={
+            'workdir': FLAGS.workdir,
+            'config': str(FLAGS.config),
+            'num_expert_partitions': FLAGS.config.num_expert_partitions,
+            'jax_process_index': jax.process_index(),
+            'jax_process_count': jax.process_count(),
+        },
+        enabled=(jax.process_index() == 0),
+    )
   # Set logical device mesh globally.
   mesh = partitioning.get_auto_logical_mesh(FLAGS.config.num_expert_partitions,
                                             jax.devices())

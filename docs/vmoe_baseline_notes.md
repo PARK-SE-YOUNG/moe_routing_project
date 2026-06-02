@@ -1032,3 +1032,214 @@ Single-GPU runtime validation.
 Multi-GPU runtime validation.
 Slurm execution with real paths.
 ```
+## WandB E=16 Smoke Upload Confirmed
+
+Date: 2026-06-02
+
+Entity:
+- yonsei2026dl10-yonsei-university
+
+Project:
+- vmoe-baseline
+
+Run:
+- e16-4gpu-smoke-wandb-test
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/qh44hjkp
+
+Confirmed metrics:
+- test/prec@1 = 0.02759
+- test/prec@5 = 0.07007
+- test/loss = 6.90529
+- test/images_per_second = 43.39827
+- test/latency_per_image = 0.02304
+- steps_per_sec = 0.09576
+- flops = 58719521996800.0
+
+Conclusion:
+- WandB API key and .netrc setup work.
+- Correct entity is yonsei2026dl10-yonsei-university.
+- V-MoE E=16 smoke metrics are successfully uploaded to WandB.
+
+## GPU Stat Scaffold Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-gpustat-test
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/7vg7iogi
+
+Confirmed GPU metrics:
+- gpu/memory_total_mb_mean = 32623
+- gpu/memory_used_mb_mean = 499
+- gpu/memory_used_ratio_mean = 0.0153
+- gpu/num_gpus = 4
+- gpu/utilization_mean = 0
+
+Conclusion:
+- GPU stat helper vmoe/train/gpu_stats.py works.
+- WandBMetricWriter successfully appends GPU stats to logged scalar metrics.
+- Current GPU utilization is sampled only at metric write time, so utilization may be 0 after eval/training completes.
+
+## Token Representation Summary Scaffold Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-tokenstat-test
+- TODO: paste WandB run URL
+
+Confirmed token summary metrics:
+- router_input/token_l2_mean
+- router_input/token_l2_std
+- router_input/token_abs_mean
+- router_input/token_abs_max
+- router_input/token_num_groups
+- router_input/token_num_tokens
+- router_input/token_hidden_dim
+
+Conclusion:
+- Router input token representation summary is logged without changing routing decisions.
+- This provides the first router-input scaffold signal for later RouterAdapter/RL-router policy inputs.
+
+## Token Representation Summary Scaffold Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-tokenstat-test
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/ty4rtfau
+
+Confirmed token summary metrics:
+- router_input/token_l2_mean
+- router_input/token_l2_std
+- router_input/token_abs_mean
+- router_input/token_abs_max
+- router_input/token_num_groups
+- router_input/token_num_tokens
+- router_input/token_hidden_dim
+
+Also retained:
+- test/prec@1
+- test/prec@5
+- test/loss
+- gpu/memory_used_mb_mean
+- gpu/num_gpus
+- router_entropy
+- router_confidence
+- expert_usage_min/max/std
+- selected_log_prob
+
+Conclusion:
+- Router input token representation summary is logged without changing routing decisions.
+- This provides the first router-input scaffold signal for later RouterAdapter/RL-router policy inputs.
+
+## Router Context Metric Scaffold Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-routercontext-test
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/zn34annx
+
+Confirmed router context metrics:
+- router_context/expert_usage_min
+- router_context/expert_usage_max
+- router_context/expert_usage_std
+- router_context/router_entropy
+- router_context/router_confidence
+- router_context/selected_log_prob
+- router_context/router_kl_to_original
+
+Also retained:
+- test/prec@1
+- test/prec@5
+- test/loss
+- test/images_per_second
+- test/latency_per_image
+- gpu/memory_used_ratio_mean
+- router_input/token_l2_mean
+- router_input/token_l2_std
+- router_input/token_abs_mean
+- router_input/token_abs_max
+
+Conclusion:
+- Existing expert/router statistics are now mirrored under router_context/*.
+- This makes future RouterAdapter/RL-router input candidates explicit while preserving original metric names.
+
+## Context-aware RouterAdapter Smoke Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-context-adapter-test
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/bgwntei7
+
+Change:
+- RouterAdapter now supports use_context_features=True.
+- It derives lightweight token/context features from router inputs.
+- Context features are broadcast and concatenated to token representations before the adapter MLP.
+- Original router logits remain unchanged; adapter produces delta logits.
+
+Observed metrics:
+- gpu/memory_total_mb_mean = 32623
+- gpu/memory_used_mb_mean = 25088.1875
+- gpu/memory_used_ratio_mean = 0.76903
+- gpu/num_gpus = 4
+- gpu/utilization_mean = 100
+- steps_per_sec = 2.38151
+- test/images_per_second = 4598.57324
+- test/compile_secs = 5.90231
+- test/duration_secs = 0.89071
+- flops = 7616026214400.0
+
+Expected adapter input:
+- hidden_dim 512 + context_dim 6 = 518
+- RouterAdapter/fc1/kernel expected input dimension: 518
+
+Conclusion:
+- Context-aware RouterAdapter scaffold is executable on E=16 / 4GPU smoke setting.
+- This completes the first executable NN-input scaffold using token-derived context.
+
+## Final Baseline Scaffold Smoke Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-final-baseline-scaffold-test
+- TODO: paste WandB run URL
+
+Confirmed:
+- E=16 / 4GPU / 4 experts per GPU smoke execution
+- WandB online logging
+- accuracy/loss metrics
+- latency/throughput metrics
+- GPU stats
+- token representation stats
+- router_context stats
+- context-aware RouterAdapter scaffold
+- checkpoint save disabled via config flag for smoke runs
+
+Conclusion:
+- Baseline scaffold is ready for handoff and further experiments.
+
+## Final Baseline Scaffold Smoke Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-4gpu-smoke-final-baseline-scaffold-test
+- TODO: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/djmujg53
+
+Confirmed:
+- E=16 / 4GPU / 4 experts per GPU smoke execution
+- WandB online logging
+- accuracy/loss metrics
+- latency/throughput metrics
+- GPU stats
+- token representation stats
+- router_context stats
+- context-aware RouterAdapter scaffold
+- checkpoint save disabled via config flag for smoke runs
+
+Conclusion:
+- Baseline scaffold is ready for handoff and further experiments.
