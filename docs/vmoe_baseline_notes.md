@@ -1565,3 +1565,63 @@ Interpretation:
 - Classification improves over scale=1.0 but remains below official-router baseline.
 - Overflow/drop ratio and expert usage imbalance worsen, so scale alone is insufficient.
 - Next stabilization should add an explicit load/drop penalty or stronger auxiliary routing balance control.
+
+## Boundary before RL / load-drop penalty scaffold
+
+At this point, the baseline scaffold has enough logging and diagnostic metrics
+to hand off the next loss-design stage to the RL/router-optimization owner.
+
+Completed by baseline scaffold:
+- E=16 official-router baseline rerun with routing/system metrics.
+- Dispatcher-derived overflow/drop ratio logging.
+- Per-expert token count logging.
+- RouterAdapter debug metrics:
+  - adapter_enabled
+  - delta_logits_abs_mean / max / l2_mean
+  - router_prob_l1_to_original
+  - router_top1_change_ratio
+  - router_kl_to_original_debug
+- Real RouterAdapter activation confirmed.
+- Frozen random head issue identified:
+  - Released checkpoint does not restore head.
+  - RouterAdapter-only trainable pattern freezes random head.
+  - RouterAdapter + head trainable fixes random-level accuracy.
+- RouterAdapter + head scale=1.0 and scale=0.1 experiments completed.
+
+Key results:
+- Official-router:
+  - Top-1: 0.21352
+  - Top-5: 0.44474
+  - Loss: 6.74059
+- RouterAdapter-only:
+  - Top-1: ~0.001
+  - Top-5: ~0.005
+  - Cause: random head frozen
+- RouterAdapter + head scale=1.0:
+  - Top-1: 0.18084
+  - Top-5: 0.37370
+  - Loss: 6.77626
+- RouterAdapter + head scale=0.1:
+  - Top-1: 0.18872
+  - Top-5: 0.39030
+  - Loss: 6.77559
+
+Interpretation:
+- RouterAdapter + head recovers from random head failure.
+- scale=0.1 improves classification over scale=1.0.
+- However, both adapter settings remain below the official-router baseline.
+- scale=0.1 reduces delta-logits and router top-1 changes, but overflow/drop and expert imbalance remain worse than official-router.
+- This suggests that further improvement requires explicit router/load/drop stabilization, which belongs to the RL/router loss design stage.
+
+Recommended handoff to RL owner:
+- Use the logged metrics as reward/penalty candidates:
+  - selected_log_prob
+  - router_entropy
+  - router_kl_to_original_debug
+  - delta_logits_l2_mean
+  - overflow/drop ratio
+  - expert_token_count_std
+  - latency/image
+  - classification loss
+- Be careful: hard overflow/drop ratio is computed after top-k/capacity dispatch and may not be differentiable.
+- Consider soft differentiable proxies for load/drop balance before PPO/SAC-style RL.
