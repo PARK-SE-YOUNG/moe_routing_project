@@ -213,6 +213,11 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
                                       eval_state=eval_state,
                                       dataset=ds_iter,
                                       params=params)
+        # JAX dispatch is asynchronous. Synchronize the evaluation state
+        # before stopping the timer so duration/throughput/latency reflect
+        # actual device execution time.
+        eval_state = jax.tree_util.tree_map(lambda x: x.block_until_ready(),
+                                            eval_state)
         t1 = time.time()
         
         duration_secs = t1 - t0

@@ -158,12 +158,13 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
                        f"num_experts = {num_experts} and "
                        f"num_selected_experts = {self.num_selected_experts}.")
     dtype = self.dtype or inputs.dtype
-    # Compute the gating logits for each pair of (item, expert).
 
+    # Compute the original router logits.
     gates_logits_original = nn.Dense(features=num_experts, use_bias=False,
                                      dtype=dtype, name="dense")(inputs)
     gates_logits = gates_logits_original
 
+    # Optional RouterAdapter: logits_new = logits_original + Delta_theta(x, h, l).
     if self.adapter:
       adapter_kwargs = dict(**self.adapter)
       adapter_hidden_dim = adapter_kwargs.pop("hidden_dim", 64)
@@ -179,17 +180,11 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
       )(inputs, routing_context=routing_context)
       gates_logits = gates_logits_original + delta_logits
 
-    # Compute the auxiliary losses defined in Appendix A.2, from
-    # https://arxiv.org/abs/2106.05974. Notice that the "Load Loss" can only be
-    # computed if the router is stochastic (i.e. deterministic = False).
-    # Notice that the auxiliary losses are computed on each group independently
-    # (i.e. through the vmaps surrounding the calls).
+    # Router probabilities before optional noisy dispatch.
     gates_softmax = jax.nn.softmax(gates_logits)
-
     gates_softmax_original = jax.nn.softmax(gates_logits_original)
 
     selected_expert = jnp.argmax(gates_softmax, axis=-1)
-
     selected_log_prob = jnp.sum(
         jax.nn.one_hot(selected_expert, num_experts)
         * jnp.log(gates_softmax + 1e-8),
@@ -197,30 +192,28 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     ).mean()
 
     router_kl_to_original = jnp.sum(
-        gates_softmax
-        * (
+        gates_softmax * (
             jnp.log(gates_softmax + 1e-8)
             - jnp.log(gates_softmax_original + 1e-8)
         ),
         axis=-1,
     ).mean()
-    
+
     router_entropy = -jnp.sum(
-      gates_softmax * jnp.log(gates_softmax + 1e-8),
-      axis=-1,
-      ).mean()
+        gates_softmax * jnp.log(gates_softmax + 1e-8),
+        axis=-1,
+    ).mean()
 
     router_confidence = jnp.max(
-      gates_softmax,
-      axis=-1,
-      ).mean()
+        gates_softmax,
+        axis=-1,
+    ).mean()
 
     top1_expert = jnp.argmax(gates_softmax, axis=-1)
-
     expert_usage = jnp.sum(
-      jax.nn.one_hot(top1_expert, num_experts),
-      axis=(0, 1),
-      )
+        jax.nn.one_hot(top1_expert, num_experts),
+        axis=(0, 1),
+    )
 
     expert_usage_min = expert_usage.min()
     expert_usage_max = expert_usage.max()
@@ -247,15 +240,37 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
         "router_context/router_kl_to_original": router_kl_to_original,
     }
 
+    # routing/* namespace for WandB dashboards and future finite-horizon RL
+    # routing analysis. Expert token counts are top-1 counts from the router
+    # probabilities before optional noisy dispatch.
+    routing_metrics = {
+        "routing/expert_token_count_min": expert_usage_min,
+        "routing/expert_token_count_max": expert_usage_max,
+        "routing/expert_token_count_std": expert_usage_std,
+        "routing/router_entropy": router_entropy,
+        "routing/router_confidence": router_confidence,
+        "routing/selected_log_prob": selected_log_prob,
+        "routing/router_kl_to_original": router_kl_to_original,
+        "routing/overflow_ratio": jnp.asarray(0.0, dtype=jnp.float32),
+        "routing/dropped_token_ratio": jnp.asarray(0.0, dtype=jnp.float32),
+    }
+    routing_metrics.update({
+        f"routing/expert_{i:02d}_token_count": expert_usage[i]
+        for i in range(num_experts)
+    })
+
     importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
     load_loss = jnp.zeros_like(importance_loss)
+
     if self.deterministic or self.noise_std == 0.0:
       gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax)
+      auxiliary_loss = _weighted_sum(
+          (self.gshard_loss_weight, gshard_loss),
+          (self.importance_loss_weight, importance_loss),
+          (self.load_loss_weight, load_loss))
+
       metrics = {
-          "auxiliary_loss": _weighted_sum(
-              (self.gshard_loss_weight, gshard_loss),
-              (self.importance_loss_weight, importance_loss),
-              (self.load_loss_weight, load_loss)),
+          "auxiliary_loss": auxiliary_loss,
           "gshard_loss": gshard_loss,
           "importance_loss": importance_loss,
           "load_loss": load_loss,
@@ -266,39 +281,54 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "expert_usage_std": expert_usage_std,
           "selected_log_prob": selected_log_prob,
           "router_kl_to_original": router_kl_to_original,
+          "routing/auxiliary_loss": auxiliary_loss,
+          "routing/gshard_loss": gshard_loss,
+          "routing/importance_loss": importance_loss,
+          "routing/load_loss": load_loss,
           **token_metrics,
           **router_context_metrics,
+          **routing_metrics,
       }
       return gates_softmax, metrics
-    else:
-      noise_std = (1.0 / num_experts) * self.noise_std
-      logits_noise = noise_std * jax.random.normal(
-          key=self.make_rng("gating"), shape=gates_logits.shape)
-      gates_logits_noisy = gates_logits + logits_noise
-      gates_softmax_noisy = jax.nn.softmax(gates_logits_noisy)
-      load_loss = jax.vmap(  # pytype: disable=wrong-arg-types
-          functools.partial(
-              self._load_auxiliary_loss,
-              num_selected_experts=self.num_selected_experts,
-              noise_std=noise_std))(gates_logits, gates_logits_noisy)
-      gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax_noisy)
-      metrics = {
-          "auxiliary_loss": _weighted_sum(
-              (self.gshard_loss_weight, gshard_loss),
-              (self.importance_loss_weight, importance_loss)),
-          "gshard_loss": gshard_loss,
-          "importance_loss": importance_loss,
-          "router_entropy": router_entropy,
-          "router_confidence": router_confidence,
-          "expert_usage_min": expert_usage_min,
-          "expert_usage_max": expert_usage_max,
-          "expert_usage_std": expert_usage_std,
-          "selected_log_prob": selected_log_prob,
-          "router_kl_to_original": router_kl_to_original,
-          **token_metrics,
-          **router_context_metrics,
-      }
-      return gates_softmax_noisy, metrics
+
+    noise_std = (1.0 / num_experts) * self.noise_std
+    logits_noise = noise_std * jax.random.normal(
+        key=self.make_rng("gating"), shape=gates_logits.shape)
+    gates_logits_noisy = gates_logits + logits_noise
+    gates_softmax_noisy = jax.nn.softmax(gates_logits_noisy)
+
+    load_loss = jax.vmap(  # pytype: disable=wrong-arg-types
+        functools.partial(
+            self._load_auxiliary_loss,
+            num_selected_experts=self.num_selected_experts,
+            noise_std=noise_std))(gates_logits, gates_logits_noisy)
+    gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax_noisy)
+    auxiliary_loss = _weighted_sum(
+        (self.gshard_loss_weight, gshard_loss),
+        (self.importance_loss_weight, importance_loss),
+        (self.load_loss_weight, load_loss))
+
+    metrics = {
+        "auxiliary_loss": auxiliary_loss,
+        "gshard_loss": gshard_loss,
+        "importance_loss": importance_loss,
+        "load_loss": load_loss,
+        "router_entropy": router_entropy,
+        "router_confidence": router_confidence,
+        "expert_usage_min": expert_usage_min,
+        "expert_usage_max": expert_usage_max,
+        "expert_usage_std": expert_usage_std,
+        "selected_log_prob": selected_log_prob,
+        "router_kl_to_original": router_kl_to_original,
+        "routing/auxiliary_loss": auxiliary_loss,
+        "routing/gshard_loss": gshard_loss,
+        "routing/importance_loss": importance_loss,
+        "routing/load_loss": load_loss,
+        **token_metrics,
+        **router_context_metrics,
+        **routing_metrics,
+    }
+    return gates_softmax_noisy, metrics
 
   @nn.nowrap
   def _create_dispatcher(self, gates_dispatch):

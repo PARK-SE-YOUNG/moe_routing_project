@@ -110,7 +110,7 @@ def get_config():
       'gradient_clip': {'global_norm': 10.0},
       })
   
-  #config.optimizer.trainable_pattern = 'RouterAdapter'
+  config.optimizer.trainable_pattern = 'RouterAdapter'
   
 
   # These control how the model parameters are partitioned across the device
