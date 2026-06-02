@@ -1331,3 +1331,21 @@ Conclusion:
 - Context-aware RouterAdapter achieved a small accuracy improvement over the E=16 official-router baseline in the matched 1000-step run.
 - Latency and throughput were effectively unchanged.
 - GPU memory usage was higher and requires repeated controlled runs before attributing the increase solely to the adapter.
+
+## E16 routing metrics smoke
+
+- Run name: e16-routing-metrics-smoke
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/at8oma46
+- Purpose:
+  - Verify routing/* metric namespace.
+  - Verify expert token count logging.
+  - Verify synced eval timing after block_until_ready().
+- Summary:
+  - images/s: 4655.18945
+  - test/duration_secs: 0.87988
+  - steps/s: 2.33283
+  - GPU utilization mean: 100
+  - GPU memory used ratio mean: 0.76911
+- Notes:
+  - routing/overflow_ratio and routing/dropped_token_ratio are currently placeholder 0.0.
+  - Actual overflow/dropped token metrics require dispatcher-level inspection.
