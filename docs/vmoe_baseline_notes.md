@@ -1243,3 +1243,45 @@ Confirmed:
 
 Conclusion:
 - Baseline scaffold is ready for handoff and further experiments.
+
+## E=16 Accuracy Baseline 1000-step Run Confirmed
+
+Date: 2026-06-02
+
+Run:
+- e16-accuracy-baseline-1000steps-tfdsfix
+- https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/mcy0t5r7
+
+Setting:
+- Official router baseline
+- Adapter disabled
+- E=16
+- num_expert_partitions=4
+- 4 GPUs
+- 4 experts per GPU
+- train split: train
+- validation split: validation
+- batch_size: 64
+- train_steps: 1000
+- checkpoint save disabled via config flag
+
+Observed summary:
+- flops = 315456782336000.0
+- steps_per_sec = 2.00309
+- test/compile_secs = 6.20133
+- test/duration_secs = 10.8306
+- test/images_per_second = 4616.54883
+- gpu/memory_total_mb_mean = 32623
+- gpu/memory_used_mb_mean = 7792.25
+- gpu/memory_used_ratio_mean = 0.23886
+- gpu/num_gpus = 4
+- gpu/utilization_mean = 100
+
+Accuracy metrics:
+- test/prec@1 = TODO
+- test/prec@5 = TODO
+- test/loss = TODO
+
+Conclusion:
+- E=16 official-router baseline accuracy run completed successfully.
+- TFDS path issue was fixed by explicitly setting data_dir and manual_dir to /workspace/imagenet/tfds and /workspace/imagenet/raw.
