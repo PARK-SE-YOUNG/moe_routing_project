@@ -1372,3 +1372,91 @@ Conclusion:
   - requested assignments = num_groups * group_size * num_selected_experts
   - kept assignments = assignments that fit within expert capacity
   - dropped ratio = 1 - kept / requested
+
+## E16 context adapter 1000-step rerun with routing metrics
+
+- Run name: e16-context-adapter-1000steps-routingmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/r4z0t2dd
+- Purpose:
+  - Re-run context-aware RouterAdapter 1000-step experiment with full routing/* metrics.
+  - Validate that routing metric logging and dispatcher-derived overflow/dropped metrics do not introduce meaningful system overhead.
+- Summary:
+  - images/s: 4608.95117
+  - test/duration_secs: 10.84846
+  - steps/s: 2.01071
+  - GPU utilization mean: 100
+  - GPU memory used ratio mean: 0.76874
+
+## E16 official-router vs context-adapter 1000-step routingmetrics comparison
+
+Official-router:
+- Run name: e16-official-router-1000steps-routingmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/2b8jvwjj
+- test/loss: 6.740594863891602
+- test/images_per_second: 4608.8759765625
+- test/latency_per_image: 0.00021697263582609594
+- steps_per_sec: 2.010242723490847
+- GPU memory used ratio mean: 0.7687425282775956
+- GPU utilization mean: 100
+
+Context-adapter:
+- Run name: e16-context-adapter-1000steps-routingmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/r4z0t2dd
+- test/loss: 6.907724380493164
+- test/images_per_second: 4608.951171875
+- test/latency_per_image: 0.00021696909971069545
+- steps_per_sec: 2.010708189806324
+- GPU memory used ratio mean: 0.7687425282775956
+- GPU utilization mean: 100
+
+Routing comparison:
+- encoderblock_5 official overflow/drop ratio: 0.02230602502822876
+- encoderblock_5 context overflow/drop ratio: 0.12526941299438477
+- encoderblock_5 official expert std: 93.37223815917969
+- encoderblock_5 context expert std: 420.0748291015625
+- encoderblock_7 official overflow/drop ratio: 0.028286635875701904
+- encoderblock_7 context overflow/drop ratio: 0.17796337604522705
+- encoderblock_7 official expert std: 189.61572265625
+- encoderblock_7 context expert std: 528.3423461914062
+
+Interpretation:
+- Full routing metric logging introduces negligible system overhead.
+- The current context-aware RouterAdapter destabilizes expert load balance.
+- The context adapter increases overflow/drop ratio and worsens test loss in this rerun.
+- router_kl_to_original is logged as 0 even in the context-adapter run, so KL/debug metrics should be verified next.
+
+## E16 official-router vs context-adapter 1000-step routingmetrics comparison
+
+Official-router:
+- Run name: e16-official-router-1000steps-routingmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/2b8jvwjj
+- test/loss: 6.740594863891602
+- test/images_per_second: 4608.8759765625
+- test/latency_per_image: 0.00021697263582609594
+- steps_per_sec: 2.010242723490847
+- GPU memory used ratio mean: 0.7687425282775956
+- GPU utilization mean: 100
+- encoderblock_5 overflow/drop ratio: 0.02230602502822876
+- encoderblock_5 expert std: 93.37223815917969
+- encoderblock_7 overflow/drop ratio: 0.028286635875701904
+- encoderblock_7 expert std: 189.61572265625
+
+Context-adapter:
+- Run name: e16-context-adapter-1000steps-routingmetrics
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/r4z0t2dd
+- test/loss: 6.907724380493164
+- test/images_per_second: 4608.951171875
+- test/latency_per_image: 0.00021696909971069545
+- steps_per_sec: 2.010708189806324
+- GPU memory used ratio mean: 0.7687425282775956
+- GPU utilization mean: 100
+- encoderblock_5 overflow/drop ratio: 0.12526941299438477
+- encoderblock_5 expert std: 420.0748291015625
+- encoderblock_7 overflow/drop ratio: 0.17796337604522705
+- encoderblock_7 expert std: 528.3423461914062
+
+Interpretation:
+- Full routing metric logging introduces negligible system overhead.
+- The current context-aware RouterAdapter destabilizes expert load balance.
+- The context adapter increases overflow/drop ratio and worsens test loss in this rerun.
+- router_kl_to_original is logged as 0 even in the context-adapter run, so KL/debug metrics should be verified next.
