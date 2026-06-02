@@ -142,7 +142,65 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     gates_softmax, metrics = self._compute_gates_softmax_and_metrics(
         inputs, self.num_experts, routing_context)
     dispatcher = self._create_dispatcher(gates_softmax)
+    metrics = {
+        **metrics,
+        **self._compute_dispatcher_metrics(dispatcher),
+    }
     return dispatcher, metrics
+
+  @nn.nowrap
+  def _compute_dispatcher_metrics(self, dispatcher: BaseDispatcher) -> Metrics:
+    """Computes capacity overflow / dropped assignment metrics from dispatcher.
+
+    The TopExpertsPerItem dispatcher drops assignments whose expert buffer index
+    exceeds the per-expert capacity. For the einsum dispatcher this appears as
+    zero dispatch weights after one_hot(buffer_idx, capacity). For the indices
+    dispatcher this appears as indices whose buffer position is >= capacity.
+    """
+    if isinstance(dispatcher, vmoe.moe.Bfloat16Dispatcher):
+      return self._compute_dispatcher_metrics(dispatcher.dispatcher)
+
+    if isinstance(dispatcher, vmoe.moe.EinsumDispatcher):
+      dispatch_weights = (
+          dispatcher.combine_weights > 0
+          if dispatcher.dispatch_weights is None else dispatcher.dispatch_weights)
+      kept_assignments = jnp.sum(dispatch_weights.astype(jnp.float32))
+      num_groups = dispatch_weights.shape[0]
+      group_size = dispatch_weights.shape[1]
+      requested_assignments = jnp.asarray(
+          num_groups * group_size * self.num_selected_experts,
+          dtype=jnp.float32)
+      dropped_ratio = 1.0 - kept_assignments / jnp.maximum(
+          requested_assignments, 1.0)
+      dropped_ratio = jnp.clip(dropped_ratio, 0.0, 1.0)
+      return {
+          "routing/overflow_ratio": dropped_ratio,
+          "routing/dropped_token_ratio": dropped_ratio,
+          "routing/kept_assignment_count": kept_assignments,
+          "routing/requested_assignment_count": requested_assignments,
+      }
+
+    if isinstance(dispatcher, vmoe.moe.ExpertIndicesDispatcher):
+      valid = jnp.logical_and(
+          dispatcher.indices[..., 0] < dispatcher.num_experts,
+          dispatcher.indices[..., 1] < dispatcher.capacity)
+      valid = jnp.logical_and(valid, dispatcher.indices[..., 1] >= 0)
+      kept_assignments = jnp.sum(valid.astype(jnp.float32))
+      requested_assignments = jnp.asarray(valid.size, dtype=jnp.float32)
+      dropped_ratio = 1.0 - kept_assignments / jnp.maximum(
+          requested_assignments, 1.0)
+      dropped_ratio = jnp.clip(dropped_ratio, 0.0, 1.0)
+      return {
+          "routing/overflow_ratio": dropped_ratio,
+          "routing/dropped_token_ratio": dropped_ratio,
+          "routing/kept_assignment_count": kept_assignments,
+          "routing/requested_assignment_count": requested_assignments,
+      }
+
+    return {
+        "routing/overflow_ratio": jnp.asarray(0.0, dtype=jnp.float32),
+        "routing/dropped_token_ratio": jnp.asarray(0.0, dtype=jnp.float32),
+    }
 
   @nn.nowrap
   def _compute_gates_softmax_and_metrics(

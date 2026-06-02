@@ -1349,3 +1349,26 @@ Conclusion:
 - Notes:
   - routing/overflow_ratio and routing/dropped_token_ratio are currently placeholder 0.0.
   - Actual overflow/dropped token metrics require dispatcher-level inspection.
+
+## E16 routing overflow smoke
+
+- Run name: e16-routing-overflow-smoke
+- W&B URL: https://wandb.ai/yonsei2026dl10-yonsei-university/vmoe-baseline/runs/jyz0enn9
+- Purpose:
+  - Replace placeholder routing/overflow_ratio and routing/dropped_token_ratio with dispatcher-derived values.
+  - Log kept/requested routing assignment counts.
+- Summary:
+  - images/s: 4573.76807
+  - test/duration_secs: 0.89554
+  - steps/s: 2.30417
+  - GPU utilization mean: 99.75
+  - GPU memory used ratio mean: 0.76911
+- Metrics added/validated:
+  - routing/overflow_ratio
+  - routing/dropped_token_ratio
+  - routing/kept_assignment_count
+  - routing/requested_assignment_count
+- Definition:
+  - requested assignments = num_groups * group_size * num_selected_experts
+  - kept assignments = assignments that fit within expert capacity
+  - dropped ratio = 1 - kept / requested
