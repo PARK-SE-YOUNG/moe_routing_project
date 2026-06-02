@@ -1278,9 +1278,9 @@ Observed summary:
 - gpu/utilization_mean = 100
 
 Accuracy metrics:
-- test/prec@1 = TODO
-- test/prec@5 = TODO
-- test/loss = TODO
+- test/prec@1 = 0.20763999223709104
+- test/prec@5 = 0.4370200037956238
+- test/loss = 6.7397541999816895
 
 Conclusion:
 - E=16 official-router baseline accuracy run completed successfully.
