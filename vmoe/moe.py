@@ -28,6 +28,7 @@ K = num_selected_experts. It must be <= num_experts.
 """
 import abc
 import math
+import os
 from typing import Any, Callable, Dict, Literal, Mapping, Optional, Tuple
 
 from absl import logging
@@ -249,7 +250,8 @@ def compute_capacity(
     # Make capacity multiple of 4 to try to avoid padding.
     capacity += (-capacity) % multiple_of
   actual_capacity_factor = capacity * num_experts / num_tokens
-  if abs(actual_capacity_factor - capacity_factor) > 1e-6:
+  if (abs(actual_capacity_factor - capacity_factor) > 1e-6
+      and os.environ.get('VMOE_SUPPRESS_CAPACITY_FACTOR_WARNINGS', '0') != '1'):
     logging.warning(
         "The target capacity_factor is %f, but with num_tokens=%d and "
         "num_experts=%d the actual capacity_factor is %f.",
@@ -267,6 +269,7 @@ def get_dense_einsum_dispatcher(gates,
 def get_top_experts_per_item_dispatcher(
     gates: Array, name: str, num_selected_experts: int, batch_priority: bool,
     capacity: Optional[int] = None, capacity_factor: Optional[float] = None,
+    capacity_num_selected_experts: Optional[int] = None,
     capacity_ceil_or_round: CeilOrRound = "ceil",
     capacity_multiple_of: Optional[int] = 4,
     **dispatcher_kwargs) -> BaseDispatcher:
@@ -293,6 +296,10 @@ def get_top_experts_per_item_dispatcher(
       Either this or `capacity_factor` must be given.
     capacity_factor: If given, sets the `capacity` to this factor of S * K / E.
       Either this or `capacity` must be given.
+    capacity_num_selected_experts: If given with `capacity_factor`, compute
+      capacity as if this many experts were selected per item. This lets
+      variable-K routing use top-M candidate slots while retaining top-K
+      capacity.
     capacity_ceil_or_round: Compute the capacity by either ceiling or rounding
       (default = "ceil").
     capacity_multiple_of: If given, ensures that the capacity is multiple of
@@ -309,9 +316,10 @@ def get_top_experts_per_item_dispatcher(
         f"capacity_factor = {capacity_factor!r}")
   if not capacity:
     group_size, num_experts = gates.shape
+    capacity_k = capacity_num_selected_experts or num_selected_experts
     capacity = compute_capacity(
         # Target number of tokens to split among the `num_experts` experts.
-        num_tokens=group_size * num_selected_experts,
+        num_tokens=group_size * capacity_k,
         num_experts=num_experts,
         capacity_factor=capacity_factor,
         ceil_or_round=capacity_ceil_or_round,
@@ -565,16 +573,20 @@ def _get_top_experts_per_item_common(
   """
   group_size, num_experts = gates.shape
   combine_weights, expert_index = jax.lax.top_k(gates, num_selected_experts)
+  selected = combine_weights > 0
   if batch_priority:
     # Sort items according to their maximum routing weight. The permutation will
     # be reversed later, so no need to permute combine_weights here.
     perm = jnp.argsort(-combine_weights[:, 0])
     expert_index = expert_index[perm]
+    selected = selected[perm]
   # (K * S,). Make K the leading axis to ensure that top-1 choices have priority
   # over top-2 choices and so on. Flatten array for cumsum.
   expert_index = jnp.swapaxes(expert_index, 0, 1).ravel()
+  selected = jnp.swapaxes(selected, 0, 1).ravel()
   # (K * S, E). Convert expert indices to a one-hot array.
   expert_one_hot = jax.nn.one_hot(expert_index, num_experts, dtype=jnp.int32)
+  expert_one_hot *= selected[:, None].astype(expert_one_hot.dtype)
   # (K * S, E) -> (K, S, E) -> (S, K, E). Use cumsum to compute the buffer idx
   # within each experts' buffer.
   buffer_index = jnp.cumsum(expert_one_hot, axis=0) * expert_one_hot - 1
@@ -644,6 +656,10 @@ def _get_top_experts_per_item_expert_indices_dispatcher(
       gates, num_selected_experts, batch_priority)
   # (S, K, E) -> (S, K). Select the only buffer index for each (item, k_choice).
   buffer_idx = jnp.max(buffer_idx, axis=2)
+  valid = buffer_idx >= 0
+  expert_idx = jnp.where(valid, expert_idx, num_experts)
+  buffer_idx = jnp.where(valid, buffer_idx, capacity)
+  combine_weights = jnp.where(valid, combine_weights, 0.0)
   return ExpertIndicesDispatcher(
       indices=jnp.stack([expert_idx, buffer_idx], axis=-1),
       combine_weights=combine_weights,

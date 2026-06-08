@@ -65,8 +65,11 @@ def _main(argv, *, main) -> None:
   # Hide any GPUs form TensorFlow. Otherwise TF might reserve memory and make
   # it unavailable to JAX.
   tf.config.set_visible_devices([], 'GPU')
-  # Log JAX compilation steps.
-  jax.config.update('jax_log_compiles', True)
+  # Log JAX compilation steps only when explicitly requested. Full training
+  # runs emit very large compile logs otherwise, especially with W&B console
+  # capture enabled.
+  if os.environ.get('VMOE_JAX_LOG_COMPILES', '0') == '1':
+    jax.config.update('jax_log_compiles', True)
   jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
   # Log useful information to identify the process running in the logs.
   logging.info('JAX process: %d / %d', jax.process_index(), jax.process_count())

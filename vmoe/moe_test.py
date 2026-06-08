@@ -249,6 +249,26 @@ class GetTopExpertsPerItemDispatcherTest(parameterized.TestCase):
     expected_capacity = 4  # increase_to_multiple_of_4(ceil(32 * 2 / 32)).
     mock_fn.assert_called_once_with(mock.ANY, 2, expected_capacity, False)
 
+  def test_top_experts_per_item_einsum_zero_gates_do_not_dispatch(self):
+    gates = jnp.asarray([[.9, .0, .0], [.0, .8, .0], [.0, .0, .0]])
+    dispatcher = moe._get_top_experts_per_item_einsum_dispatcher(
+        gates, num_selected_experts=3, capacity=3, batch_priority=False)
+    self.assertEqual(int(jnp.sum(dispatcher.dispatch_weights)), 2)
+    np.testing.assert_array_almost_equal(
+        jnp.sum(dispatcher.combine_weights, axis=(1, 2)),
+        jnp.asarray([.9, .8, .0]))
+
+  @mock.patch.object(moe, '_get_top_experts_per_item_einsum_dispatcher')
+  def test_get_top_experts_per_item_dispatcher_capacity_factor_uses_capacity_k(
+      self, mock_fn):
+    gates = jnp.zeros((32, 32))
+    _ = moe.get_top_experts_per_item_dispatcher(
+        gates, 'einsum', num_selected_experts=5, capacity=None,
+        capacity_factor=1.0, capacity_num_selected_experts=2,
+        batch_priority=False)
+    expected_capacity = 4  # increase_to_multiple_of_4(ceil(32 * 2 / 32)).
+    mock_fn.assert_called_once_with(mock.ANY, 5, expected_capacity, False)
+
   def test_get_top_experts_per_item_dispatcher_unknown(self):
     gates = jnp.zeros((4, 32))
     with self.assertRaisesRegex(ValueError, 'Unknown dispatcher type'):

@@ -99,13 +99,14 @@ class MlpMoeBlock(nn.Module):
       }
 
   @nn.compact
-  def __call__(self, inputs):
+  def __call__(self, inputs, routing_context: Optional[KwArgs] = None):
     assert inputs.ndim == 3, f'Expected ndim = 3, but got shape {inputs.shape}'
     # Reshape inputs from (num_seqs, seq_length, hidden_size) to
     # (num_groups, groups_size, hidden_size).
     inputs_shape = inputs.shape
     inputs = inputs.reshape(-1, self.group_size, inputs.shape[-1])
-    dispatcher, metrics = self.create_router()(inputs)
+    dispatcher, metrics = self.create_router()(
+        inputs, routing_context=routing_context)
     # Use the dispatcher to apply a MoE of MlpBlocks.
     mlp_moe_layer = vmoe.moe.sparse_moe_spmd(
         MlpBlock,
@@ -159,7 +160,7 @@ class EncoderBlock(nn.Module):
   deterministic: bool = False
 
   @nn.compact
-  def __call__(self, inputs):
+  def __call__(self, inputs, routing_context: Optional[KwArgs] = None):
     # Attention Block.
     x = nn.LayerNorm(dtype=self.dtype)(inputs)
     x = MultiHeadDotProductAttention(
@@ -175,7 +176,11 @@ class EncoderBlock(nn.Module):
     x = x + inputs
     # MLP-MoE block.
     y = nn.LayerNorm(dtype=self.dtype)(x)
-    y = self.mlp_block(dtype=self.dtype, deterministic=self.deterministic)(y)
+    mlp = self.mlp_block(dtype=self.dtype, deterministic=self.deterministic)
+    if routing_context is None:
+      y = mlp(y)
+    else:
+      y = mlp(y, routing_context=routing_context)
     if isinstance(y, jnp.ndarray):
       return x + y
     else:
@@ -226,7 +231,7 @@ class EncoderMoe(nn.Module):
   DEFAULT_SINCOS2D_TEMPERATURE: ClassVar[float] = 10_000.
 
   @nn.compact
-  def __call__(self, inputs):
+  def __call__(self, inputs, routing_context: Optional[KwArgs] = None):
     assert inputs.ndim == 3, f'Expected ndim = 3, but got shape {inputs.shape}'
     x = self.add_position_emb(inputs)
     x = nn.Dropout(rate=self.dropout_rate, deterministic=self.deterministic)(x)
@@ -250,10 +255,18 @@ class EncoderMoe(nn.Module):
         dtype=self.dtype)
 
     metrics = {}
+    moe_layer_index = 0
     for block in range(self.num_layers):
       if block in moe_mlp_layers:
+        block_routing_context = routing_context
+        if routing_context is not None:
+          block_routing_context = dict(routing_context)
+          block_routing_context['moe_layer_index'] = jnp.asarray(
+              moe_layer_index, dtype=jnp.int32)
         x, metrics[f'encoderblock_{block}'] = encoder_block_cls(
-            name=f'encoderblock_{block}', mlp_block=moe_mlp_cls)(x)
+            name=f'encoderblock_{block}', mlp_block=moe_mlp_cls)(
+                x, routing_context=block_routing_context)
+        moe_layer_index += 1
       else:
         x = encoder_block_cls(
             name=f'encoderblock_{block}', mlp_block=dense_mlp_cls)(x)
@@ -332,7 +345,7 @@ class VisionTransformerMoe(nn.Module):
       return nn.linear.default_kernel_init
 
   @nn.compact
-  def __call__(self, inputs):
+  def __call__(self, inputs, routing_context: Optional[KwArgs] = None):
     # Encode patches into tokens of hidden_size.
     x = nn.Conv(
         features=self.hidden_size, kernel_size=self.patch_size,
@@ -353,7 +366,8 @@ class VisionTransformerMoe(nn.Module):
       x = jnp.concatenate([cls, x], axis=1)
     # Encode tokens unsing the MoE encoder.
     x, metrics = self.encoder_cls(
-        name='Encoder', deterministic=self.deterministic, **encoder_kwargs)(x)
+        name='Encoder', deterministic=self.deterministic, **encoder_kwargs)(
+            x, routing_context=routing_context)
     # Get a single vector representation of the full sequence.
     if self.classifier == 'token' or self.classifier == '0':
       x = x[:, 0]

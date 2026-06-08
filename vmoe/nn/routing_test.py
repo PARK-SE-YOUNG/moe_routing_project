@@ -79,6 +79,19 @@ class NoisyTopExpertsPerItemRouterTest(parameterized.TestCase):
     expected_output = 0.48573864536489236
     self.assertAlmostEqual(expected_output, float(output), places=6)
 
+  def test_variable_k_subset_action_helpers(self):
+    self.assertEqual(routing.get_variable_k_num_subset_actions(5), 16)
+    self.assertEqual(routing.variable_k_base_action(base_k=3, candidate_m=5), 3)
+    actions = jnp.asarray([0, 1, 3, 15], dtype=jnp.int32)
+    masks = routing.variable_k_action_to_selection_mask(actions, candidate_m=5)
+    expected = jnp.asarray([
+        [True, False, False, False, False],
+        [True, True, False, False, False],
+        [True, True, True, False, False],
+        [True, True, True, True, True],
+    ])
+    chex.assert_trees_all_equal(masks, expected)
+
   # We mock get_top_experts_per_item_dispatcher to avoid having to specify the
   # parameters of the dispatcher during testing. The output of the
   # NoisyTopExpertsPerItemRouter is supposed to be a dispatcher, but we will
@@ -99,6 +112,64 @@ class NoisyTopExpertsPerItemRouterTest(parameterized.TestCase):
     chex.assert_trees_all_close(y1, y2)
     chex.assert_trees_all_close(m1, m2)
 
+  def test_variable_k_deterministic_zero_init_selects_base_k(self):
+    x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
+    layer = routing.NoisyTopExpertsPerItemRouter(
+        num_experts=4,
+        num_selected_experts=2,
+        noise_std=0.0,
+        deterministic=True,
+        variable_k={
+            'enabled': True,
+            'candidate_m': 3,
+            'base_k': 2,
+            'min_selected': 1,
+            'hidden_dim': 8,
+            'expert_embedding_dim': 4,
+            'rank_embedding_dim': 2,
+        })
+    output, _ = layer.init_with_output(
+        {'params': jax.random.PRNGKey(0), 'gating': jax.random.PRNGKey(1)}, x)
+    y, metrics = output
+    self.assertEqual(y.shape, (1, 5, 4))
+    chex.assert_trees_all_close(
+        jnp.sum(y > 0, axis=-1), jnp.full((1, 5), 2))
+    self.assertIn('routing/variable_k/avg_selected_k', metrics)
+    self.assertIn('routing/variable_k/importance_weighted_miss', metrics)
+    self.assertIn('routing/variable_k/policy_entropy', metrics)
+    self.assertAlmostEqual(
+        float(metrics['routing/variable_k/avg_selected_k']), 2.0, places=5)
+    self.assertTrue(jnp.isfinite(metrics['routing/variable_k/policy_log_prob']))
+
+  def test_variable_k_forced_action_selects_subset_only(self):
+    x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
+    layer = routing.NoisyTopExpertsPerItemRouter(
+        num_experts=4,
+        num_selected_experts=2,
+        noise_std=0.0,
+        deterministic=True,
+        variable_k={
+            'enabled': True,
+            'candidate_m': 3,
+            'base_k': 2,
+            'min_selected': 1,
+            'hidden_dim': 8,
+            'expert_embedding_dim': 4,
+            'rank_embedding_dim': 2,
+        })
+    variables = layer.init(
+        {'params': jax.random.PRNGKey(0), 'gating': jax.random.PRNGKey(1)}, x)
+    routing_context = {
+        'variable_k/action_ids': jnp.zeros((1, 1, 5), dtype=jnp.int32),
+    }
+    y, metrics = layer.apply(
+        variables, x, routing_context=routing_context,
+        rngs={'gating': jax.random.PRNGKey(2)})
+    chex.assert_trees_all_close(
+        jnp.sum(y > 0, axis=-1), jnp.ones((1, 5)))
+    self.assertAlmostEqual(
+        float(metrics['routing/variable_k/avg_selected_k']), 1.0, places=5)
+
   def test_forward_not_deterministic(self):
     """Tests that output is different given two different gating PRNG seeds."""
     x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
@@ -114,11 +185,12 @@ class NoisyTopExpertsPerItemRouterTest(parameterized.TestCase):
     different_fn = lambda x, y: jnp.abs(x - y).sum() > 0.01
     error_msg_fn = lambda x, y: f'{x} is too close to {y}'
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, y1, y2)
-    # Importance loss is applied before adding noise, so it should be identical.
+    # Importance loss and pre-dispatch router metrics are computed before
+    # adding noise, so only noisy routing losses are expected to differ.
     chex.assert_trees_all_close(m1['importance_loss'], m2['importance_loss'])
-    del m1['importance_loss']
-    del m2['importance_loss']
-    chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, m1, m2)
+    self.assertTrue(different_fn(m1['gshard_loss'], m2['gshard_loss']))
+    self.assertTrue(different_fn(m1['load_loss'], m2['load_loss']))
+    self.assertTrue(different_fn(m1['auxiliary_loss'], m2['auxiliary_loss']))
 
 
 class NoisyTopItemsPerExpertRouterTest(parameterized.TestCase):

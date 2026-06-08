@@ -43,8 +43,13 @@ class SingleProcessPeriodicAction:
 class ReportProgress(periodic_actions.ReportProgress):
   """Reports training progress, including metrics."""
 
-  def __init__(self, *, process_index: Optional[int] = 0, **kwargs):
+  def __init__(self, *, process_index: Optional[int] = 0,
+               write_progress_metrics: bool = True, **kwargs):
     self._process_index = process_index
+    self._extra_writer = kwargs.get('writer')
+    if not write_progress_metrics:
+      kwargs = dict(kwargs)
+      kwargs['writer'] = None
     super().__init__(**kwargs)
 
   def __call__(self, step: int, t: Optional[float] = None, **kwargs) -> bool:
@@ -62,7 +67,7 @@ class ReportProgress(periodic_actions.ReportProgress):
   def _apply_extra(
       self, step: int, t: float, scalar_metrics: Optional[Dict[str, Any]] = None
   ):
-    if self._writer is not None:
+    if self._extra_writer is not None:
       scalar_metrics = scalar_metrics or {}
       scalar_metrics = {
           '/'.join(k): float(v)
@@ -73,4 +78,4 @@ class ReportProgress(periodic_actions.ReportProgress):
         scalar_metrics['host_memory_mb'] = memory_usage_mb
       for key, value in self._time_per_part.items():
         scalar_metrics[f'uptime_{key}'] = value
-      self._writer.write_scalars(step, scalar_metrics)
+      self._extra_writer.write_scalars(step, scalar_metrics)

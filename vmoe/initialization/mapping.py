@@ -53,6 +53,7 @@ target = map_state_dict(
     raise_if_target_unmatched=False)
 ```
 """
+import os
 import re
 from typing import Dict, Iterable, List, Union
 
@@ -233,5 +234,6 @@ def _natural_sort(names: Iterable[str]) -> List[str]:
 def _raise_or_warn(cls, exception_msg, raise_exception, warn_msg=None):
   if raise_exception:
     raise cls(exception_msg)
-  else:
-    logging.warning(warn_msg or exception_msg)
+  if os.environ.get('VMOE_SUPPRESS_INIT_MAPPING_WARNINGS', '0') == '1':
+    return
+  logging.warning(warn_msg or exception_msg)

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Classes and functions used for training (from-scratch and fine-tuning)."""
+import fnmatch
 import functools
 import multiprocessing.pool
 import os
@@ -49,6 +50,8 @@ from vmoe.evaluate import evaluator
 from vmoe.evaluate import fewshot
 from vmoe.nn import models
 from vmoe.projects.adversarial_attacks import attacks as adversarial_attacks
+from vmoe.train import cleanrl_ppo
+from vmoe.train import hardware_context
 from vmoe.train import optimizer
 from vmoe.train import periodic_actions as train_periodic_actions
 from vmoe.train import train_state as train_state_module
@@ -334,7 +337,9 @@ def make_create_train_state_fn(
     input_shape_dtypes: Tuple[jax.ShapeDtypeStruct, ...],
     train_steps: int,
     seed: int = 0,
-    extra_rng_keys: Tuple[str, ...]) -> Callable[[], TrainState]:
+    extra_rng_keys: Tuple[str, ...] = (),
+    init_routing_context: Optional[Mapping[str, Array]] = None,
+) -> Callable[[], TrainState]:
   """Returns a function that creates and initializes a TrainState from scratch.
 
   Args:
@@ -359,7 +364,11 @@ def make_create_train_state_fn(
                    for x in input_shape_dtypes)
     inputs = tuple(partitioning.with_sharding_constraint(x, s.sharding)
                    for x, s in zip(inputs, input_shape_dtypes))
-    variables = model.init(rngs, *inputs)
+    if init_routing_context is None:
+      variables = model.init(rngs, *inputs)
+    else:
+      variables = model.init(
+          rngs, *inputs, routing_context=init_routing_context)
     rngs.pop('params')  # This PRNGKey is not used anymore.
     return TrainState.create(
         apply_fn=model.apply, tx=tx, rngs=rngs, **variables)
@@ -430,9 +439,10 @@ def restore_or_create_train_state(
     train_state = initialize_train_state_from_checkpoint(
         train_state=train_state, mesh=mesh, thread_pool=thread_pool,
         **initialization_kwargs)
-  parameter_overview.log_parameter_overview(
-      train_state_shape_dtype.params, include_stats=False,
-      msg='Parameter overview:')
+  if os.environ.get('VMOE_LOG_PARAMETER_OVERVIEW', '0') == '1':
+    parameter_overview.log_parameter_overview(
+        train_state_shape_dtype.params, include_stats=False,
+        msg='Parameter overview:')
   return create_or_reuse_train_state(
       train_state=train_state, initialize_fn=initialize_fn, mesh=mesh), None
 
@@ -648,23 +658,72 @@ def train_step(
     state: TrainState,
     images: Array,
     labels: Array,
+    routing_context: Optional[Mapping[str, Array]] = None,
+    *,
     loss_fn: Callable[[Array, Array], Array],
     microsteps: Optional[int] = None,
     summarizer: Optional[TreeSummarizer] = None,
+    rl_loss_config: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[TrainState, Mapping[str, Any]]:
   """Performs one update step of the given TrainState object ."""
 
   @functools.partial(jax.grad, has_aux=True)
   def compute_grads_and_metrics(params, images, labels, rngs):
     rngs, next_rngs = utils.tree_rngs_split(rngs)
-    logits, metrics = state.apply_fn({'params': params}, images, rngs=rngs)
-    metrics = dict(**metrics)    
+    logits, metrics = state.apply_fn(
+        {'params': params}, images, routing_context=routing_context, rngs=rngs)
+    metrics = dict(**metrics)
+    if routing_context:
+      metrics.update({
+          f"routing_context/input/{name}": jnp.asarray(value, dtype=jnp.float32)
+          for name, value in routing_context.items()
+      })
     metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
     metrics = jax.tree_util.tree_map(jnp.mean, metrics)
 
-    rl_loss = 0.0
-    rl_loss = rl_loss + metrics.get('router_kl_to_original', 0.0)
-    rl_loss = rl_loss - 0.01 * metrics.get('router_entropy', 0.0)
+    def _mean_metric_by_suffix(suffix):
+      flat_metrics = flax.traverse_util.flatten_dict(metrics, sep='/')
+      values = [
+          jnp.asarray(value) for name, value in flat_metrics.items()
+          if name == suffix or name.endswith('/' + suffix)
+      ]
+      if not values:
+        return None
+      return jnp.mean(jnp.stack(values))
+
+    rl_loss_kwargs = dict(**(rl_loss_config or {}))
+    miss_weight = float(rl_loss_kwargs.get('miss_weight', 1.0))
+    usage_entropy_weight = float(
+        rl_loss_kwargs.get('usage_entropy_weight', 0.01))
+    selection_budget_weight = float(
+        rl_loss_kwargs.get('selection_budget_weight', 0.0))
+    miss_loss = _mean_metric_by_suffix(
+        'routing/variable_k/importance_weighted_miss')
+    if miss_loss is not None:
+      usage_entropy = _mean_metric_by_suffix('routing/variable_k/usage_entropy')
+      if usage_entropy is None:
+        usage_entropy = jnp.asarray(0.0, dtype=jnp.float32)
+      selection_budget_loss = _mean_metric_by_suffix(
+          'routing/variable_k/selection_budget_loss')
+      if selection_budget_loss is None:
+        selection_budget_loss = _mean_metric_by_suffix(
+            'routing/variable_k/avg_selected_k_ratio')
+      if selection_budget_loss is None:
+        selection_budget_loss = jnp.asarray(0.0, dtype=jnp.float32)
+      metrics['routing/variable_k/importance_weighted_miss'] = miss_loss
+      metrics['routing/variable_k/usage_entropy'] = usage_entropy
+      metrics['routing/variable_k/selection_budget_loss'] = selection_budget_loss
+      rl_loss = (
+          miss_weight * miss_loss
+          - usage_entropy_weight * usage_entropy
+          + selection_budget_weight * selection_budget_loss)
+      metrics['rl_loss/miss_component'] = miss_weight * miss_loss
+      metrics['rl_loss/usage_entropy_component'] = (
+          -usage_entropy_weight * usage_entropy)
+      metrics['rl_loss/selection_budget_component'] = (
+          selection_budget_weight * selection_budget_loss)
+    else:
+      rl_loss = jnp.asarray(0.0, dtype=jnp.float32)
 
     metrics['rl_loss'] = rl_loss
 
@@ -688,6 +747,300 @@ def train_step(
 
   if summarizer:
     # Summarize arrays in the gradients tree or the train state.
+    state_flat = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(state), sep='/')
+    state_flat['params_grads'] = flax.traverse_util.flatten_dict(grads, sep='/')
+    metrics.update(summarizer(state_flat))
+
+  return state, metrics
+
+
+def _metric_values_by_suffix(metrics: Mapping[str, Any], suffix: str):
+  flat_metrics = flax.traverse_util.flatten_dict(metrics, sep='/')
+  return [
+      value for name, value in flat_metrics.items()
+      if name == suffix or name.endswith('/' + suffix)
+  ]
+
+
+def _stack_metric_by_suffix(
+    metrics: Mapping[str, Any], suffix: str, dtype: Optional[Any] = None
+) -> Array:
+  values = _metric_values_by_suffix(metrics, suffix)
+  if not values:
+    raise KeyError(f'No metric ending with {suffix!r} was found.')
+  arrays = [jnp.asarray(value, dtype=dtype) for value in values]
+  return jnp.stack(arrays, axis=0)
+
+
+def _mean_metric_by_suffix(
+    metrics: Mapping[str, Any], suffix: str, default: Optional[Array] = None
+) -> Optional[Array]:
+  values = _metric_values_by_suffix(metrics, suffix)
+  if not values:
+    return default
+  return jnp.mean(jnp.stack([jnp.asarray(value) for value in values]))
+
+
+def _mean_metrics_for_logging(metrics: Mapping[str, Any]) -> Mapping[str, Any]:
+  return jax.tree_util.tree_map(
+      lambda x: jnp.mean(jnp.asarray(x, dtype=jnp.float32)), metrics)
+
+
+_DEFAULT_COMPACT_TRAIN_ALLOWLIST = (
+    'main_loss',
+    'rl_loss',
+    'global_norm/grads',
+    'global_norm/updates',
+    'ppo/policy_loss',
+    'ppo/value_loss',
+    'ppo/entropy_loss',
+    'ppo/approx_kl',
+    'ppo/clipfrac',
+    'ppo/ratio_mean',
+    'ppo/return_mean',
+    'ppo/value_mean',
+    'rl_loss/miss_reward_component',
+    'rl_loss/usage_entropy_reward_component',
+    'rl_loss/latency_reward_component',
+    'routing/variable_k/latency_reward',
+    'routing/variable_k/latency_baseline_secs',
+    'routing/variable_k/avg_selected_k',
+    'routing/variable_k/avg_selected_k_ratio',
+    'routing/variable_k/selected_q_mass',
+    'routing/variable_k/accepted_q_mass',
+    'routing/variable_k/importance_weighted_miss',
+    'routing/variable_k/accepted_usage_entropy',
+    'routing/variable_k/max_expert_usage_ratio',
+    'routing/variable_k/policy_entropy',
+    'routing/variable_k/selected_k_ratio/k_*',
+    'routing/variable_k/block_*/avg_selected_k',
+    'routing/variable_k/block_*/avg_selected_k_ratio',
+    'routing/variable_k/block_*/selected_q_mass',
+    'routing/variable_k/block_*/accepted_q_mass',
+    'routing/variable_k/block_*/importance_weighted_miss',
+    'routing/variable_k/block_*/accepted_usage_entropy',
+    'routing/variable_k/block_*/max_expert_usage_ratio',
+    'routing/variable_k/block_*/policy_entropy',
+    'routing/variable_k/block_*/selected_k_ratio/k_*',
+)
+
+
+def _add_variable_k_block_metric_aliases(
+    flat_metrics: Mapping[str, Any]) -> Mapping[str, Any]:
+  """Adds block_N aliases for nested encoderblock_N variable-K metrics."""
+  metrics_with_aliases = dict(flat_metrics)
+  metric_prefix = 'routing/variable_k/'
+  for name, value in flat_metrics.items():
+    parts = name.split('/', 1)
+    if len(parts) != 2 or not parts[0].startswith('encoderblock_'):
+      continue
+    block_name, suffix_path = parts
+    if not suffix_path.startswith(metric_prefix):
+      continue
+    block_id = block_name.removeprefix('encoderblock_')
+    suffix = suffix_path[len(metric_prefix):]
+    metrics_with_aliases[
+        f'routing/variable_k/block_{block_id}/{suffix}'] = value
+  return metrics_with_aliases
+
+
+def _matches_metric_patterns(name: str, patterns: Sequence[str]) -> bool:
+  return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
+
+
+def _filter_train_metrics_for_logging(
+    metrics: Mapping[str, Any],
+    metric_logging_config: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+  if not metric_logging_config or not metric_logging_config.get(
+      'compact_train_metrics', False):
+    return metrics
+  flat_metrics = flax.traverse_util.flatten_dict(metrics, sep='/')
+  flat_metrics = _add_variable_k_block_metric_aliases(flat_metrics)
+  allowlist = tuple(metric_logging_config.get(
+      'train_allowlist', _DEFAULT_COMPACT_TRAIN_ALLOWLIST))
+  return {
+      name: value for name, value in flat_metrics.items()
+      if _matches_metric_patterns(name, allowlist)
+  }
+
+def variable_k_ppo_collect_step(
+    state: TrainState,
+    images: Array,
+    labels: Array,
+    routing_context: Optional[Mapping[str, Array]] = None,
+    *,
+    loss_fn: Callable[[Array, Array], Array],
+) -> Tuple[TrainState, Mapping[str, Any], Mapping[str, Array]]:
+  """Collects one contextual-bandit PPO transition for variable-K routing."""
+  rngs, next_rngs = utils.tree_rngs_split(state.rngs)
+  logits, metrics = state.apply_fn(
+      {'params': state.params}, images, routing_context=routing_context,
+      rngs=rngs)
+  metrics = dict(**metrics)
+  if routing_context:
+    metrics.update({
+        f"routing_context/input/{name}": jnp.asarray(value, dtype=jnp.float32)
+        for name, value in routing_context.items()
+        if name != 'variable_k/action_ids'
+    })
+  metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
+  auxiliary_loss = jnp.asarray(metrics.get('auxiliary_loss', 0.0),
+                               dtype=jnp.float32)
+  usage_entropy = _mean_metric_by_suffix(
+      metrics, 'routing/variable_k/accepted_usage_entropy')
+  if usage_entropy is None:
+    usage_entropy = _mean_metric_by_suffix(
+        metrics, 'routing/variable_k/usage_entropy',
+        jnp.asarray(0.0, dtype=jnp.float32))
+  ppo_batch = {
+      'action_ids': _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/ppo_action_id', dtype=jnp.int32),
+      'old_log_prob': _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/ppo_action_log_prob', dtype=jnp.float32),
+      'old_value': _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/ppo_value', dtype=jnp.float32),
+      'accepted_q_mass': _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/accepted_q_mass_per_token',
+          dtype=jnp.float32),
+      'usage_entropy': jnp.asarray(usage_entropy, dtype=jnp.float32),
+  }
+  logging_metrics = dict(_mean_metrics_for_logging(metrics))
+  logging_metrics['total_loss'] = logging_metrics['main_loss'] + jnp.mean(
+      auxiliary_loss)
+  return state.replace(rngs=next_rngs), logging_metrics, ppo_batch
+
+
+def variable_k_ppo_update_step(
+    state: TrainState,
+    images: Array,
+    labels: Array,
+    ppo_batch: Mapping[str, Array],
+    latency_reward: Array,
+    routing_context: Optional[Mapping[str, Array]] = None,
+    *,
+    loss_fn: Callable[[Array, Array], Array],
+    ppo_config: Optional[Mapping[str, Any]] = None,
+    summarizer: Optional[TreeSummarizer] = None,
+) -> Tuple[TrainState, Mapping[str, Any]]:
+  """Updates variable-K adapter params with CleanRL-style clipped PPO."""
+  ppo_kwargs = dict(**(ppo_config or {}))
+  miss_reward_weight = float(ppo_kwargs.get('miss_reward_weight', 1.0))
+  usage_entropy_weight = float(ppo_kwargs.get('usage_entropy_weight', 0.01))
+  latency_weight = float(ppo_kwargs.get('latency_weight', 0.01))
+  clip_coef = float(ppo_kwargs.get('clip_coef', 0.2))
+  vf_coef = float(ppo_kwargs.get('vf_coef', 0.5))
+  ent_coef = float(ppo_kwargs.get('ent_coef', 0.01))
+  normalize_advantage = bool(ppo_kwargs.get('advantage_normalize', True))
+  update_epochs = int(ppo_kwargs.get('update_epochs', 1))
+  num_minibatches = int(ppo_kwargs.get('num_minibatches', 1))
+  if update_epochs < 1:
+    raise ValueError(f'update_epochs must be >= 1, got {update_epochs}.')
+  if num_minibatches != 1:
+    raise ValueError('Only num_minibatches=1 is supported for routing PPO V1.')
+
+  def compute_grads_and_metrics(params, rngs):
+
+    @functools.partial(jax.grad, has_aux=True)
+    def compute_loss(params):
+      step_rngs, next_rngs = utils.tree_rngs_split(rngs)
+      update_routing_context = dict(routing_context or {})
+      update_routing_context['variable_k/action_ids'] = ppo_batch['action_ids']
+      logits, metrics = state.apply_fn(
+          {'params': params}, images, routing_context=update_routing_context,
+          rngs=step_rngs)
+      metrics = dict(**metrics)
+      metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
+
+      new_log_prob = _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/ppo_action_log_prob', dtype=jnp.float32)
+      new_values = _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/ppo_value', dtype=jnp.float32)
+      entropy = _stack_metric_by_suffix(
+          metrics, 'routing/variable_k/ppo_policy_entropy', dtype=jnp.float32)
+
+      latency_reward_f = jnp.asarray(latency_reward, dtype=jnp.float32)
+      returns = (
+          miss_reward_weight * ppo_batch['accepted_q_mass']
+          + usage_entropy_weight * ppo_batch['usage_entropy']
+          + latency_weight * latency_reward_f)
+      old_values = ppo_batch['old_value']
+      advantages = returns - old_values
+      ppo_loss, ppo_metrics = cleanrl_ppo.clipped_ppo_loss(
+          new_log_prob=new_log_prob,
+          old_log_prob=ppo_batch['old_log_prob'],
+          advantages=advantages,
+          new_values=new_values,
+          old_values=old_values,
+          returns=returns,
+          entropy=entropy,
+          clip_coef=clip_coef,
+          vf_coef=vf_coef,
+          ent_coef=ent_coef,
+          normalize_advantage=normalize_advantage)
+
+      logging_metrics = dict(_mean_metrics_for_logging(metrics))
+      logging_metrics.update({
+          'rl_loss': ppo_loss,
+          'ppo/policy_loss': ppo_metrics['ppo/policy_loss'],
+          'ppo/value_loss': ppo_metrics['ppo/value_loss'],
+          'ppo/entropy_loss': ppo_metrics['ppo/entropy_loss'],
+          'ppo/approx_kl': ppo_metrics['ppo/approx_kl'],
+          'ppo/old_approx_kl': ppo_metrics['ppo/old_approx_kl'],
+          'ppo/clipfrac': ppo_metrics['ppo/clipfrac'],
+          'ppo/ratio_mean': ppo_metrics['ppo/ratio_mean'],
+          'ppo/advantage_mean': ppo_metrics['ppo/advantage_mean'],
+          'ppo/return_mean': ppo_metrics['ppo/return_mean'],
+          'ppo/value_mean': ppo_metrics['ppo/value_mean'],
+          'routing/variable_k/ppo_approx_kl': ppo_metrics['ppo/approx_kl'],
+          'routing/variable_k/ppo_clipfrac': ppo_metrics['ppo/clipfrac'],
+          'routing/variable_k/latency_reward': latency_reward_f,
+          'rl_loss/miss_reward_component': (
+              miss_reward_weight * jnp.mean(ppo_batch['accepted_q_mass'])),
+          'rl_loss/usage_entropy_reward_component': (
+              usage_entropy_weight * ppo_batch['usage_entropy']),
+          'rl_loss/latency_reward_component': latency_weight * latency_reward_f,
+      })
+      compact_metric_suffixes = (
+          'routing/variable_k/avg_selected_k',
+          'routing/variable_k/avg_selected_k_ratio',
+          'routing/variable_k/selected_q_mass',
+          'routing/variable_k/accepted_q_mass',
+          'routing/variable_k/importance_weighted_miss',
+          'routing/variable_k/usage_entropy',
+          'routing/variable_k/accepted_usage_entropy',
+          'routing/variable_k/max_expert_usage_ratio',
+          'routing/variable_k/policy_entropy',
+          'routing/variable_k/policy_log_prob',
+          'routing/variable_k/value_mean',
+      )
+      for suffix in compact_metric_suffixes:
+        value = _mean_metric_by_suffix(metrics, suffix)
+        if value is not None:
+          logging_metrics[suffix] = value
+      for k in range(1, 17):
+        suffix = f'routing/variable_k/selected_k_ratio/k_{k}'
+        value = _mean_metric_by_suffix(metrics, suffix)
+        if value is not None:
+          logging_metrics[suffix] = value
+      logging_metrics['total_loss'] = ppo_loss
+      return ppo_loss, (next_rngs, logging_metrics)
+
+    return compute_loss(params)
+
+  original_step = state.step
+  metrics = {}
+  global_norms = {}
+  for _ in range(update_epochs):
+    grads, (next_rngs, metrics) = compute_grads_and_metrics(
+        state.params, state.rngs)
+    state, global_norms = state.apply_gradients_and_compute_global_norms(
+        grads, rngs=next_rngs)
+  state = state.replace(step=original_step + 1)
+  metrics.update({f'global_norm/{k}': v for k, v in global_norms.items()})
+
+  if summarizer:
     state_flat = flax.traverse_util.flatten_dict(
         flax.serialization.to_state_dict(state), sep='/')
     state_flat['params_grads'] = flax.traverse_util.flatten_dict(grads, sep='/')
@@ -721,12 +1074,22 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
 
   ckpt_manager = create_checkpoint_manager(
       workdir=workdir, **config.get('save_checkpoint', {}))
+  use_routing_context = bool(config.get('routing_context', {}).get(
+      'enabled', False))
+
+  def _make_routing_context(step: int):
+    if not use_routing_context:
+      return None
+    return hardware_context.make_routing_context(
+        config, step=step, train_steps=train_steps, batch_size=train_batch_size)
+
   train_state_initialize_fn = make_create_train_state_fn(
       model=create_flax_model(config=config.model, deterministic=False),
       optimizer_config=config.optimizer,
       input_shape_dtypes=(datataset_element_shape_dtype['image'],),
       train_steps=train_steps,
       extra_rng_keys=tuple(config.get('extra_rng_keys', [])),
+      init_routing_context=_make_routing_context(0),
       seed=config.get('seed', 0))
   train_state, last_seen_index = restore_or_create_train_state(
       ckpt_manager=ckpt_manager,
@@ -743,31 +1106,74 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       last_seen_index=last_seen_index)
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
   summarizer = create_tree_summarizer(config.get('summarize_arrays'))
-  train_step_fn = functools.partial(
-      train_step,
-      loss_fn=train_loss_fn,
-      microsteps=config.get('microsteps'),
-      summarizer=summarizer)
-  if config.get('adversarial', {}):
-    adversarial_config = config.adversarial.to_dict()
-    train_step_fn = wrap_train_step_with_adversarial_attack(
-        train_step_fn, train_loss_fn, **adversarial_config)
-  # If mixup options are defined, wrap the train_step_fn with mixup.
-  if config.get('mixup', {}):
-    mixup_config = config.mixup.to_dict()
-    train_step_fn = wrap_train_step_with_mixup(
-        train_step_fn,
-        partition_spec=jax.sharding.PartitionSpec(mesh.axis_names,),
-        **mixup_config)
+  ppo_config = config.get('ppo', {})
+  ppo_enabled = bool(ppo_config.get('enabled', False))
+  latency_weight = float(ppo_config.get('latency_weight', 0.0))
+  latency_baseline_secs = float(ppo_config.get('latency_baseline_secs', 0.0))
+  if ppo_enabled and latency_weight > 0.0 and latency_baseline_secs <= 0.0:
+    raise ValueError(
+        'config.ppo.latency_baseline_secs must be > 0 when '
+        'config.ppo.latency_weight > 0.')
 
-  train_step_pjit = pjit.pjit(
-      fun=train_step_fn,
-      out_shardings=(
-          jax.tree_util.tree_map(lambda x: x.sharding, train_state),
-          None,
-      ),
-      donate_argnums=(0, 1, 2),
-  )
+  if ppo_enabled:
+    if config.get('adversarial', {}):
+      raise ValueError('PPO variable-k training does not support adversarial.')
+    if config.get('mixup', {}):
+      raise ValueError('PPO variable-k training does not support mixup.')
+    if config.get('microsteps'):
+      raise ValueError('PPO variable-k training does not support microsteps.')
+    train_step_fn = functools.partial(
+        variable_k_ppo_collect_step,
+        loss_fn=train_loss_fn)
+    ppo_update_step_fn = functools.partial(
+        variable_k_ppo_update_step,
+        loss_fn=train_loss_fn,
+        ppo_config=ppo_config,
+        summarizer=summarizer)
+    train_step_pjit = pjit.pjit(
+        fun=train_step_fn,
+        out_shardings=(
+            jax.tree_util.tree_map(lambda x: x.sharding, train_state),
+            None,
+            None,
+        ),
+        donate_argnums=(0,),
+    )
+    ppo_update_step_pjit = pjit.pjit(
+        fun=ppo_update_step_fn,
+        out_shardings=(
+            jax.tree_util.tree_map(lambda x: x.sharding, train_state),
+            None,
+        ),
+        donate_argnums=(0,),
+    )
+  else:
+    train_step_fn = functools.partial(
+        train_step,
+        loss_fn=train_loss_fn,
+        microsteps=config.get('microsteps'),
+        summarizer=summarizer,
+        rl_loss_config=config.get('rl_loss', {}))
+    if config.get('adversarial', {}):
+      adversarial_config = config.adversarial.to_dict()
+      train_step_fn = wrap_train_step_with_adversarial_attack(
+          train_step_fn, train_loss_fn, **adversarial_config)
+    # If mixup options are defined, wrap the train_step_fn with mixup.
+    if config.get('mixup', {}):
+      mixup_config = config.mixup.to_dict()
+      train_step_fn = wrap_train_step_with_mixup(
+          train_step_fn,
+          partition_spec=jax.sharding.PartitionSpec(mesh.axis_names,),
+          **mixup_config)
+
+    train_step_pjit = pjit.pjit(
+        fun=train_step_fn,
+        out_shardings=(
+            jax.tree_util.tree_map(lambda x: x.sharding, train_state),
+            None,
+        ),
+        donate_argnums=(0, 1, 2),
+    )
 
   # Setup hooks.
   profile_hook = create_profile_hook(
@@ -798,8 +1204,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   # state at initialization.
   def _save_checkpoint(step, ts, it, force=False):
     if config.get('disable_checkpoint_save', False):
-      logging.info(
-          'Skipping checkpoint save because disable_checkpoint_save=True.')
       return
     last_seen_index = step * train_batch_size
     with progress_hook.timed('ckpt', wait_jax_async_dispatch=False):
@@ -815,32 +1219,88 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
     _save_checkpoint(init_step, train_state, tr_iter, force=True)
   # Explicitly compile train_step here.
   t0 = time.time()
-  train_step_pjit = train_step_pjit.lower(
+  compile_args = [
       train_state,
       datataset_element_shape_dtype['image'],
-      datataset_element_shape_dtype['labels']).compile()
+      datataset_element_shape_dtype['labels'],
+  ]
+  if use_routing_context:
+    compile_args.append(_make_routing_context(init_step + 1))
+  train_step_pjit = train_step_pjit.lower(*compile_args).compile()
   t1 = time.time()
-  # Report compilation time, and flops and optimal seconds per step and device.
-  writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
-  train_step_flops_per_device, train_step_seconds_per_device = (
-      utils.get_flops_and_seconds_per_device(train_step_pjit))
-  if train_step_flops_per_device:
-    writer.write_scalars(
-        init_step + 1,
-        {'train/step_flops_per_device': train_step_flops_per_device})
-  if train_step_seconds_per_device:
-    writer.write_scalars(
-        init_step + 1,
-        {'train/step_seconds_per_device': train_step_seconds_per_device})
-  train_cost_fn = make_train_cost_fn(train_step_pjit)
+  metric_logging_config = config.get('metric_logging', {})
+  log_train_cost = bool(metric_logging_config.get('log_train_cost', True))
+  if log_train_cost:
+    writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
+    train_step_flops_per_device, train_step_seconds_per_device = (
+        utils.get_flops_and_seconds_per_device(train_step_pjit))
+    if train_step_flops_per_device:
+      writer.write_scalars(
+          init_step + 1,
+          {'train/step_flops_per_device': train_step_flops_per_device})
+    if train_step_seconds_per_device:
+      writer.write_scalars(
+          init_step + 1,
+          {'train/step_seconds_per_device': train_step_seconds_per_device})
+    train_cost_fn = make_train_cost_fn(train_step_pjit)
+  else:
+    train_cost_fn = lambda step: {}
   for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
     profile_hook(step)
-    with jax.profiler.StepTraceAnnotation('train', step_num=step):
-      train_state, metrics = train_step_pjit(train_state, batch['image'],
-                                             batch['labels'])
-    progress_hook(step, scalar_metrics=(
-        train_cost_fn(step) | {f'train/{k}': v for k, v in metrics.items()}
-    ))
+    if ppo_enabled:
+      collect_t0 = time.time()
+      with jax.profiler.StepTraceAnnotation('train_collect', step_num=step):
+        if use_routing_context:
+          train_state, collect_metrics, ppo_batch = train_step_pjit(
+              train_state, batch['image'], batch['labels'],
+              _make_routing_context(step))
+        else:
+          train_state, collect_metrics, ppo_batch = train_step_pjit(
+              train_state, batch['image'], batch['labels'])
+      jax.block_until_ready(collect_metrics['total_loss'])
+      wall_time_per_step_secs = time.time() - collect_t0
+      if latency_baseline_secs > 0.0:
+        latency_reward = -(
+            wall_time_per_step_secs / latency_baseline_secs - 1.0)
+      else:
+        latency_reward = 0.0
+
+      update_t0 = time.time()
+      with jax.profiler.StepTraceAnnotation('train_ppo_update', step_num=step):
+        if use_routing_context:
+          train_state, metrics = ppo_update_step_pjit(
+              train_state, batch['image'], batch['labels'], ppo_batch,
+              jnp.asarray(latency_reward, dtype=jnp.float32),
+              _make_routing_context(step))
+        else:
+          train_state, metrics = ppo_update_step_pjit(
+              train_state, batch['image'], batch['labels'], ppo_batch,
+              jnp.asarray(latency_reward, dtype=jnp.float32))
+      jax.block_until_ready(metrics['total_loss'])
+      metrics = dict(metrics)
+      metrics['wall_time_per_step_secs'] = wall_time_per_step_secs
+      metrics['ppo_update_time_secs'] = time.time() - update_t0
+      metrics['routing/variable_k/latency_reward'] = latency_reward
+      metrics['routing/variable_k/latency_baseline_secs'] = (
+          latency_baseline_secs)
+    else:
+      step_t0 = time.time()
+      with jax.profiler.StepTraceAnnotation('train', step_num=step):
+        if use_routing_context:
+          train_state, metrics = train_step_pjit(
+              train_state, batch['image'], batch['labels'],
+              _make_routing_context(step))
+        else:
+          train_state, metrics = train_step_pjit(
+              train_state, batch['image'], batch['labels'])
+      jax.block_until_ready(metrics['total_loss'])
+      metrics = dict(metrics)
+      metrics['wall_time_per_step_secs'] = time.time() - step_t0
+    metrics_for_logging = _filter_train_metrics_for_logging(
+        metrics, metric_logging_config)
+    progress_hook(step, scalar_metrics={
+        f'train/{k}': v for k, v in metrics_for_logging.items()
+    })
     _save_checkpoint(step, train_state, tr_iter)
     evaluation_hook(step, params=train_state.params, **train_cost_fn(step))
     fewshot_hook(step, variables={'params': train_state.params},
